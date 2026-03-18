@@ -3,8 +3,8 @@
 ## 基础信息
 - 基地址: `http://localhost:3000`
 - API 版本: v1
-- 所有请求和响应均为 JSON 格式
-- 除 `/register` 和 `/login` 外，所有端点都需要 Bearer Token 认证
+- 大多数请求和响应为 JSON；图片获取接口返回二进制文件
+- 除 `GET /api`、`POST /api/v1/auth/register` 和 `POST /api/v1/auth/login` 外，其他端点都需要 Bearer Token 认证
 
 ---
 
@@ -65,7 +65,7 @@ GET /api
 }
 ```
 
-**失败响应** (400/409)
+**失败响应** (400)
 ```json
 {
   "detail": "用户名已存在"
@@ -259,12 +259,8 @@ Authorization: Bearer {access_token}
 ### POST /api/v1/images/upload
 上传图片文件。
 
-上传成功后，系统会在后台异步自动执行以下流程：
-- OCR 识别
-- 结构化信息提取
-- 关系图生成
-
-接口会立即返回，不会等待上述流程完成。
+当前版本上传接口仅保存文件与图片记录，不会自动触发 OCR/结构化/关系图任务。
+如需继续处理，请手动调用 `POST /api/v1/images/{image_id}/ocr`。
 
 **请求头**
 ```
@@ -298,9 +294,17 @@ Content-Type: multipart/form-data
 ```json
 {
   "success": false,
-  "message": "不支持的文件类型。允许的类型: .jpg, .jpeg, .png, .gif, .bmp, .webp, .tiff"
+  "message": "文件为空"
 }
 ```
+
+失败响应同样使用 200，`message` 可能为：
+- 不支持的文件类型
+- 文件过大
+- 文件为空
+- 读取文件失败
+- 保存文件失败
+- 保存到数据库失败
 
 ---
 
@@ -319,7 +323,8 @@ Authorization: Bearer {access_token}
 - 返回图片文件内容（二进制数据）
 
 **错误响应**
-- 404: 图片不存在或文件找不到
+- 404: `"detail": "image not found"`
+- 404: `"detail": "image file not found"`
 
 ---
 
@@ -341,7 +346,8 @@ Authorization: Bearer {access_token}
 - `image/jpeg`
 
 **错误响应**
-- 404: 图片不存在或文件找不到
+- 404: `"detail": "image not found"`
+- 404: `"detail": "image file not found"`
 
 ---
 
@@ -409,7 +415,7 @@ Authorization: Bearer {access_token}
     "id": 1,
     "filename": "photo_a1b2c3d4.jpg",
     "upload_time": "2024-01-01T12:00:00",
-    "title": "暂无标题"
+    "title": "title_test"
   }
 }
 ```
@@ -434,7 +440,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "图片 1 的OCR已添加到处理队列"
+  "message": "图片 1 的OCR任务已提交到队列"
 }
 ```
 
@@ -556,7 +562,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "OcrResult 1 的结构化分析已添加到处理队列"
+  "message": "OCR结果 1 的结构化分析任务已提交到队列"
 }
 ```
 
@@ -650,7 +656,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "StructuredResult 1 的关系图分析已添加到处理队列"
+  "message": "StructuredResult 1 的关系图生成任务已提交到队列"
 }
 ```
 
@@ -704,7 +710,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "多任务创建成功",
+  "message": "Multi task created successfully",
   "multi_task_id": 1,
   "structured_result_ids": [1, 2, 3],
   "created_at": "2024-01-01T12:00:00"
@@ -734,7 +740,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "多任务创建成功",
+  "message": "Multi task created from images successfully",
   "multi_task_id": 1,
   "image_ids": [1, 2, 3],
   "structured_result_ids": [5, 8, 12],
@@ -742,18 +748,20 @@ Authorization: Bearer {access_token}
 }
 ```
 
-**失败响应** (404)
-以下情况会返回404错误：
-- 任意图片不存在：`"detail": "图片 {image_id} 不存在"`
-- 任意图片没有OCR结果：`"detail": "图片 {image_id} 没有OCR结果"`
-- 任意图片的最新OCR结果没有结构化结果：`"detail": "图片 {image_id} 的最新OCR结果没有结构化结果"`
-
-**失败响应** (500)
+**失败响应** (400)
 ```json
 {
-  "detail": "创建失败: {错误信息}"
+  "detail": "Image 1 has no OCR results"
 }
 ```
+
+典型失败信息还包括：
+- `Image {image_id} not found`
+- `Image {image_id} has no structured results`
+- `Image {image_id} does not belong to the current user`
+- `StructuredResult {id} not found`
+- `StructuredResult {id} does not belong to the current user`
+- `Failed to create multi task: ...`
 
 ---
 
@@ -804,7 +812,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "多任务及关联分析结果已删除",
+  "message": "Multi task deleted",
   "deleted": {
     "multi_task_id": 1,
     "multi_relation_graphs": 2,
@@ -814,9 +822,9 @@ Authorization: Bearer {access_token}
 ```
 
 **错误响应**
-- 403: 无权删除该多任务
-- 404: 多任务不存在
-- 500: 删除失败
+- 403: `"detail": "Permission denied"`
+- 404: `"detail": "MultiTask not found"`
+- 400: `"detail": "Failed to delete multi task: ..."`
 
 ---
 
@@ -828,7 +836,7 @@ Authorization: Bearer {access_token}
 
 **查询参数**
 - `skip` (query, integer) - 分页偏移量，默认为 0
-- `limit` (query, integer) - 每页数量，默认为 10
+- `limit` (query, integer) - 每页数量，默认为 10，范围 1-100
 
 **请求头**
 ```
@@ -871,7 +879,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "MultiTask 1 的跨文档分析已添加到处理队列"
+  "message": "MultiTask 1 的跨文档分析任务已提交到队列"
 }
 ```
 
@@ -931,10 +939,12 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "answer": "根据现有文档，道光年间共有以下几笔土地交易：1. 道光十二年，恒忠将田产卖给篋叙堂...",
-  "sources": [
-    "时间：道光十二年二月初二日，卖方：恒忠，买方：篋叙堂..."
-  ]
+  "data": {
+    "answer": "根据现有文档，道光年间共有以下几笔土地交易：1. 道光十二年，恒忠将田产卖给篋叙堂...",
+    "sources": [
+      "时间：道光十二年二月初二日，卖方：恒忠，买方：篋叙堂..."
+    ]
+  }
 }
 ```
 
@@ -955,6 +965,7 @@ Authorization: Bearer {access_token}
 - `200` - 请求成功
 - `400` - 请求参数错误或业务逻辑失败
 - `401` - 认证失败或 Token 无效/过期
+- `403` - 无权限访问资源
 - `404` - 资源不存在
 - `500` - 服务器错误
 
@@ -978,7 +989,7 @@ POST /api/v1/auth/login     -> 登录，获得 access_token
 
 #### 2. 图片处理流程
 ```
-POST /api/v1/images/upload              -> 上传图片，获得 imageId（自动异步触发 OCR/结构化/关系图）
+POST /api/v1/images/upload              -> 上传图片，获得 imageId（当前版本仅保存图片，不自动触发后续分析）
 POST /api/v1/images/{imageId}/ocr       -> 触发 OCR 识别
 GET  /api/v1/images/{imageId}/ocr-results  -> 获取 OCR 结果列表
 GET  /api/v1/ocr-results/{ocrId}        -> 获取单个 OCR 结果详情
