@@ -21,7 +21,9 @@ from dotenv import load_dotenv
 import warnings
 from PIL import Image as PILImage, UnidentifiedImageError
 
-from ocr import ocr_image_by_id
+from app.services.ocr_service import ocr_image_by_id
+from app.routers.multi_tasks import router as multi_task_router_v2
+from app.worker.tasks import task_ocr_image, task_analyze_ocr_result, task_analyze_structured_result, task_analyze_multi_task
 
 # 加载.env
 load_dotenv()
@@ -139,11 +141,11 @@ def ensure_thumbnail_exists(image_path: str, thumbnail_path: str, size: tuple[in
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成缩略图失败: {str(e)}")
 
-def run_auto_image_pipeline(image_id: int) -> None:
+async def run_auto_image_pipeline(image_id: int) -> None:
     """后台串行执行 OCR -> 结构化提取 -> 关系图生成。"""
     db = SessionLocal()
     try:
-        from analysis import analyze_ocr_result, analyze_structured_result
+        from app.services.analysis_service import analyze_ocr_result, analyze_structured_result
 
         # 记录调用前该图片最新 OCR id，便于定位本次新建记录
         latest_before = (
@@ -154,7 +156,7 @@ def run_auto_image_pipeline(image_id: int) -> None:
         )
         latest_before_id = latest_before[0] if latest_before else 0
 
-        ocr_success = ocr_image_by_id(image_id, db)
+        ocr_success = await ocr_image_by_id(image_id, db)
         if not ocr_success:
             return
 
@@ -167,7 +169,7 @@ def run_auto_image_pipeline(image_id: int) -> None:
         if not ocr_result:
             return
 
-        analyze_ocr_result(ocr_result.id, db)
+        await analyze_ocr_result(ocr_result.id, db)
 
         structured_result = (
             db.query(StructuredResult)
@@ -178,7 +180,7 @@ def run_auto_image_pipeline(image_id: int) -> None:
         if not structured_result:
             return
 
-        analyze_structured_result(structured_result.id, db)
+        await analyze_structured_result(structured_result.id, db)
     except Exception as e:
         print(f"后台自动处理失败(image_id={image_id}): {str(e)}")
     finally:
@@ -227,7 +229,7 @@ structured_result_router = APIRouter(prefix="/api/v1/structured-results", tags=[
 relation_graph_router = APIRouter(prefix="/api/v1/relation-graphs", tags=["关系图"])
 
 # 多任务路由
-multi_task_router = APIRouter(prefix="/api/v1/multi-tasks", tags=["多任务分析"])
+# multi_task_router = APIRouter(prefix="/api/v1/multi-tasks", tags=["多任务分析"])
 
 # 跨文档关系图路由
 multi_relation_graph_router = APIRouter(prefix="/api/v1/multi-relation-graphs", tags=["跨文档关系图"])
@@ -693,12 +695,12 @@ async def perform_image_ocr(
     if not image:
         raise HTTPException(status_code=404, detail="图片不存在")
     
-    # 执行OCR
-    ocr_image_by_id(image_id, db)
+    # 执行OCR (Celery Async)
+    task_ocr_image.delay(image_id)
     
     return {
         "success": True,
-        "message": f"图片 {image_id} 的OCR已添加到处理队列"
+        "message": f"图片 {image_id} 的OCR任务已提交到队列"
     }
 
 # GET /api/v1/ocr-results/{ocr_id} - 获取特定OCR结果
@@ -785,13 +787,12 @@ async def create_structured_result(
     if not ocr_result:
         raise HTTPException(status_code=404, detail="OcrResult不存在")
     
-    # 调用分析函数（异步处理）
-    from analysis import analyze_ocr_result
-    analyze_ocr_result(request.ocr_result_id, db)
+    # 调用分析函数（Celery Async）
+    task_analyze_ocr_result.delay(request.ocr_result_id)
     
     return {
         "success": True,
-        "message": f"OcrResult {request.ocr_result_id} 的结构化分析已添加到处理队列"
+        "message": f"OCR结果 {request.ocr_result_id} 的结构化分析任务已提交到队列"
     }
 
 # GET /api/v1/structured-results/{structured_result_id} - 获取指定StructuredResult
@@ -885,13 +886,12 @@ async def create_relation_graph(
     if not structured_result:
         raise HTTPException(status_code=404, detail="StructuredResult不存在")
     
-    # 调用分析函数（异步处理）
-    from analysis import analyze_structured_result
-    analyze_structured_result(request.structured_result_id, db)
+    # 调用分析函数（Celery Async）
+    task_analyze_structured_result.delay(request.structured_result_id)
     
     return {
         "success": True,
-        "message": f"StructuredResult {request.structured_result_id} 的关系图分析已添加到处理队列"
+        "message": f"StructuredResult {request.structured_result_id} 的关系图生成任务已提交到队列"
     }
 
 # GET /api/v1/relation-graphs/{relation_graph_id} - 获取指定RelationGraph
@@ -968,176 +968,6 @@ async def get_structured_result_relation_graphs(
 
 # 多任务路由
 
-# POST /api/v1/multi-tasks - 创建跨文档分析任务
-@multi_task_router.post("")
-async def create_multi_task(
-    request: CreateMultiTaskRequest,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """创建跨文档分析任务"""
-    # 验证token
-    token = credentials.credentials
-    payload = verify_token(token)
-    user_id = payload.get("user_id")
-    
-    # 验证用户存在
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 验证所有StructuredResult存在
-    for sr_id in request.structured_result_ids:
-        sr = db.query(StructuredResult).filter(StructuredResult.id == sr_id).first()
-        if not sr:
-            raise HTTPException(status_code=404, detail=f"StructuredResult {sr_id} 不存在")
-    
-    # 创建MultiTask
-    try:
-        multi_task = MultiTask(
-            user_id=user_id,
-            created_at=get_beijing_time()
-        )
-        db.add(multi_task)
-        db.commit()
-        db.refresh(multi_task)
-        
-        # 创建关联关系
-        for sr_id in request.structured_result_ids:
-            association = MultiTaskStructuredResult(
-                multi_task_id=multi_task.id,
-                structured_result_id=sr_id,
-                created_at=get_beijing_time()
-            )
-            db.add(association)
-        
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "多任务创建成功",
-            "multi_task_id": multi_task.id,
-            "structured_result_ids": request.structured_result_ids,
-            "created_at": multi_task.created_at.isoformat()
-        }
-    except Exception as e:
-        db.rollback()
-        return {"success": False, "message": f"创建失败: {str(e)}"}
-
-# POST /api/v1/multi-tasks/from-images - 根据图片ID创建跨文档分析任务
-@multi_task_router.post("/from-images")
-async def create_multi_task_from_images(
-    request: CreateMultiTaskByImagesRequest,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """根据多个图片ID，获取每个图片最后一个OCR结果的最后一个结构化结果，创建跨文档分析任务"""
-    # 验证token
-    token = credentials.credentials
-    payload = verify_token(token)
-    user_id = payload.get("user_id")
-    
-    # 验证用户存在
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 对每个image_id，获取最后一个OCR结果的最后一个结构化结果
-    structured_result_ids = []
-    for image_id in request.image_ids:
-        # 验证图片存在
-        image = db.query(Image).filter(Image.id == image_id).first()
-        if not image:
-            raise HTTPException(status_code=404, detail=f"图片 {image_id} 不存在")
-        
-        # 获取该图片最后一个OCR结果（id最大）
-        latest_ocr = (
-            db.query(OcrResult)
-            .filter(OcrResult.image_id == image_id)
-            .order_by(OcrResult.id.desc())
-            .first()
-        )
-        if not latest_ocr:
-            raise HTTPException(status_code=404, detail=f"图片 {image_id} 没有OCR结果")
-        
-        # 获取该OCR结果最后一个结构化结果（id最大）
-        latest_structured = (
-            db.query(StructuredResult)
-            .filter(StructuredResult.ocr_result_id == latest_ocr.id)
-            .order_by(StructuredResult.id.desc())
-            .first()
-        )
-        if not latest_structured:
-            raise HTTPException(status_code=404, detail=f"图片 {image_id} 的最新OCR结果没有结构化结果")
-        
-        structured_result_ids.append(latest_structured.id)
-    
-    # 创建MultiTask
-    try:
-        multi_task = MultiTask(
-            user_id=user_id,
-            created_at=get_beijing_time()
-        )
-        db.add(multi_task)
-        db.commit()
-        db.refresh(multi_task)
-        
-        # 创建关联关系
-        for sr_id in structured_result_ids:
-            association = MultiTaskStructuredResult(
-                multi_task_id=multi_task.id,
-                structured_result_id=sr_id,
-                created_at=get_beijing_time()
-            )
-            db.add(association)
-        
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "多任务创建成功",
-            "multi_task_id": multi_task.id,
-            "image_ids": request.image_ids,
-            "structured_result_ids": structured_result_ids,
-            "created_at": multi_task.created_at.isoformat()
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
-
-# GET /api/v1/multi-tasks/{multi_task_id} - 获取指定MultiTask
-@multi_task_router.get("/{multi_task_id}")
-async def get_multi_task(
-    multi_task_id: int,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """获取指定id的多任务"""
-    # 验证token
-    token = credentials.credentials
-    verify_token(token)
-    
-    # 查询多任务
-    multi_task = db.query(MultiTask).filter(MultiTask.id == multi_task_id).first()
-    
-    if not multi_task:
-        raise HTTPException(status_code=404, detail="MultiTask不存在")
-    
-    # 查询关联的StructuredResult
-    associations = db.query(MultiTaskStructuredResult).filter(MultiTaskStructuredResult.multi_task_id == multi_task_id).all()
-    sr_ids = [assoc.structured_result_id for assoc in associations]
-    
-    return {
-        "success": True,
-        "data": {
-            "id": multi_task.id,
-            "user_id": multi_task.user_id,
-            "status": multi_task.status.value,
-            "structured_result_ids": sr_ids,
-            "created_at": multi_task.created_at.isoformat()
-        }
-    }
-
 # GET /api/v1/users/multi-tasks - 获取指定用户的MultiTask列表
 @users_router.get("/multi-tasks")
 async def get_user_multi_tasks(
@@ -1173,48 +1003,6 @@ async def get_user_multi_tasks(
         }
     }
 
-# DELETE /api/v1/multi-tasks/{multi_task_id} - 删除多任务及其关联结果
-@multi_task_router.delete("/{multi_task_id}")
-async def delete_multi_task(
-    multi_task_id: int,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """删除多任务，并清理其多关系图和关联记录。"""
-    token = credentials.credentials
-    payload = verify_token(token)
-    user_id = payload.get("user_id")
-
-    multi_task = db.query(MultiTask).filter(MultiTask.id == multi_task_id).first()
-    if not multi_task:
-        raise HTTPException(status_code=404, detail="多任务不存在")
-
-    if multi_task.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权删除该多任务")
-
-    # 计数统计
-    deleted_multi_relation_count = db.query(MultiRelationGraph).filter(MultiRelationGraph.multi_task_id == multi_task_id).count()
-    deleted_association_count = db.query(MultiTaskStructuredResult).filter(MultiTaskStructuredResult.multi_task_id == multi_task_id).count()
-
-    try:
-        # 由于配置了cascade，直接删除MultiTask会自动清理关联的MultiRelationGraph和MultiTaskStructuredResult
-        db.delete(multi_task)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
-
-    return {
-        "success": True,
-        "message": "多任务及关联分析结果已删除",
-        "deleted": {
-            "multi_task_id": multi_task_id,
-            "multi_relation_graphs": deleted_multi_relation_count,
-            "multi_task_associations": deleted_association_count
-        }
-    }
-
-
 # 跨文档关系图路由
 
 # POST /api/v1/multi-relation-graphs - 对指定MultiTask进行跨文档分析
@@ -1234,13 +1022,12 @@ async def create_multi_relation_graph(
     if not multi_task:
         raise HTTPException(status_code=404, detail="MultiTask不存在")
     
-    # 调用分析函数（异步处理）
-    from analysis import analyze_multi_task
-    analyze_multi_task(request.multi_task_id, db)
+    # 调用分析函数（Celery Async）
+    task_analyze_multi_task.delay(request.multi_task_id)
     
     return {
         "success": True,
-        "message": f"MultiTask {request.multi_task_id} 的跨文档分析已添加到处理队列"
+        "message": f"MultiTask {request.multi_task_id} 的跨文档分析任务已提交到队列"
     }
 
 # GET /api/v1/multi-relation-graphs/{multi_relation_graph_id} - 获取指定MultiRelationGraph
@@ -1279,40 +1066,6 @@ async def get_multi_relation_graph(
         }
     }
 
-# GET /api/v1/multi-tasks/{multi_task_id}/multi-relation-graphs - 获取指定MultiTask的MultiRelationGraph列表
-@multi_task_router.get("/{multi_task_id}/multi-relation-graphs")
-async def get_multi_task_relation_graphs(
-    multi_task_id: int,
-    skip: int = 0,
-    limit: int = 10,
-    db: Session = Depends(get_db),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """获取指定MultiTask的跨文档关系图列表"""
-    # 验证token
-    token = credentials.credentials
-    verify_token(token)
-    
-    # 验证MultiTask存在
-    multi_task = db.query(MultiTask).filter(MultiTask.id == multi_task_id).first()
-    if not multi_task:
-        raise HTTPException(status_code=404, detail="MultiTask不存在")
-    
-    # 查询跨文档关系图，分页返回id
-    relation_graphs = db.query(MultiRelationGraph.id).filter(MultiRelationGraph.multi_task_id == multi_task_id).offset(skip).limit(limit).all()
-    
-    # 获取总数
-    total = db.query(MultiRelationGraph).filter(MultiRelationGraph.multi_task_id == multi_task_id).count()
-    
-    return {
-        "success": True,
-        "data": {
-            "total": total,
-            "skip": skip,
-            "limit": limit,
-            "ids": [graph[0] for graph in relation_graphs]
-        }
-    } 
 
 # 智能问答路由
 
@@ -1323,19 +1076,23 @@ async def chat_query(
     db: Session = Depends(get_db),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    """基于知识库的智能问答"""
+    """
+    RAG 对话接口
+    """
     # 验证token
     token = credentials.credentials
     verify_token(token)
     
-    from rag import rag_pipeline
-    result = rag_pipeline(request.question, db)
+    from app.services.rag_service import rag_pipeline
     
-    return {
-        "success": True,
-        "answer": result["answer"],
-        "sources": result["sources"]
-    }
+    try:
+        result = await rag_pipeline(request.question, db)
+        return {
+            "success": True,
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -1343,7 +1100,8 @@ app.include_router(images_router)
 app.include_router(ocr_router)
 app.include_router(structured_result_router)
 app.include_router(relation_graph_router)
-app.include_router(multi_task_router)
+app.include_router(multi_task_router_v2)
+# app.include_router(multi_task_router)
 app.include_router(multi_relation_graph_router)
 app.include_router(chat_router)
 

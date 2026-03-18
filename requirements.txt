@@ -1,4 +1,3 @@
-
 jinja2
 openai
 pydantic
@@ -20,3 +19,7 @@ python-multipart
 httpx
 pytest
 Pillow
+pydantic-settings
+celery
+redis
+chromadb
