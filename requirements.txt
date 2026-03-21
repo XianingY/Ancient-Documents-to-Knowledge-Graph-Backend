@@ -1,25 +1,52 @@
-jinja2
-openai
-pydantic
-sqlalchemy
-networkx
-fastapi
-uvicorn
-python-dotenv
-dashscope
-paddlepaddle
-paddleocr
-pyjwt
-python-jose
-numpy==1.26.4
-pandas==1.5.3
+# =============================================================================
+# 古代地契知识图谱 · 后端运行时依赖
+# -----------------------------------------------------------------------------
+# 版本与当前生产环境 pip list 对齐（直接依赖均用 == 固定，便于换机复现）。
+#
+# Python：建议 3.11+（与《项目开发文档》一致；networkx 3.6 / pytest 9 等需 3.10+）
+#
+# 在本目录安装：
+#   python -m venv .venv
+#   .venv\Scripts\activate          # Windows
+#   source .venv/bin/activate       # Linux / macOS
+#   python -m pip install -U pip
+#   pip install -r requirements.txt
+#
+# 可选镜像：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 关于 chromadb：生产 pip 曾出现 chromadb==0.3.26，该系列依赖 Pydantic v1 的 BaseSettings，
+# 无法与 FastAPI 栈上的 Pydantic 2 共存，且不含 PersistentClient。此处固定为 0.5.23；
+# 若生产仍为 0.3.x，请升级后删除旧向量数据目录或按 Chroma 文档迁移后再启动。
+# =============================================================================
+
+# Web
+fastapi==0.135.1
+starlette==0.52.1
+uvicorn[standard]==0.41.0
+python-multipart==0.0.22
+slowapi==0.1.9
+
+# 配置与校验
+python-dotenv==1.2.2
+pydantic==2.12.5
+pydantic-settings==2.13.1
+
+# 数据库
+SQLAlchemy==2.0.48
+
+# 鉴权（PyPI 包名 PyJWT，代码中 import jwt）
+PyJWT==2.12.1
 passlib==1.7.4
 bcrypt==3.2.0
-python-multipart
-httpx
-pytest
-Pillow
-pydantic-settings
-celery
-redis
-chromadb
+
+# 图片
+pillow==12.1.1
+
+# 任务队列与缓存
+celery[redis]==5.6.2
+redis==7.3.0
+
+# AI / 向量检索 / 图分析
+dashscope==1.25.13
+chromadb==0.5.23
+networkx==3.6.1

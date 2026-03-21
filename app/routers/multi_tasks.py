@@ -1,57 +1,77 @@
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from database import get_db, User
+from database import get_db, SessionLocal, User
 from app.core.deps import get_current_user_id, get_current_user
 from app.services.multi_task_service import (
-    create_multi_task, 
-    delete_multi_task, 
-    get_multi_task, 
+    create_multi_task,
+    delete_multi_task,
+    get_multi_task,
     find_latest_structured_results_for_images,
     get_multi_task_relation_ids,
     get_multi_task_structured_result_ids,
     MultiTaskServiceError,
     ResourceNotFoundError,
-    PermissionDeniedError
+    PermissionDeniedError,
 )
 from app.schemas.multi_tasks import CreateMultiTaskRequest, CreateMultiTaskByImagesRequest
 
 router = APIRouter(prefix="/api/v1/multi-tasks", tags=["Multi Tasks"])
 
+
+async def _auto_analyze(multi_task_id: int) -> None:
+    """创建 MultiTask 后在后台自动执行跨文档分析"""
+    db = SessionLocal()
+    try:
+        from app.services.analysis_service import analyze_multi_task
+        await analyze_multi_task(multi_task_id, db)
+    except Exception as exc:
+        print(f"[auto-analyze] MultiTask {multi_task_id} failed: {exc}")
+    finally:
+        db.close()
+
+
 @router.post("")
-def create_multi_task_endpoint(
+async def create_multi_task_endpoint(
     request: CreateMultiTaskRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id)
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
         task = create_multi_task(db, user_id, request.structured_result_ids)
+        background_tasks.add_task(_auto_analyze, task.id)
         return {
             "success": True,
-            "message": "Multi task created successfully",
+            "message": "Multi task created successfully, analysis started automatically",
             "multi_task_id": task.id,
             "structured_result_ids": request.structured_result_ids,
-            "created_at": task.created_at.isoformat()
+            "created_at": task.created_at.isoformat(),
         }
     except MultiTaskServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.post("/from-images")
-def create_multi_task_from_images_endpoint(
+async def create_multi_task_from_images_endpoint(
     request: CreateMultiTaskByImagesRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id)
+    user_id: int = Depends(get_current_user_id),
 ):
     try:
-        structured_result_ids = find_latest_structured_results_for_images(db, request.image_ids, user_id=user_id)
+        structured_result_ids = find_latest_structured_results_for_images(
+            db, request.image_ids, user_id=user_id
+        )
         task = create_multi_task(db, user_id, structured_result_ids)
+        background_tasks.add_task(_auto_analyze, task.id)
         return {
             "success": True,
-            "message": "Multi task created from images successfully",
+            "message": "Multi task created from images successfully, analysis started automatically",
             "multi_task_id": task.id,
             "image_ids": request.image_ids,
             "structured_result_ids": structured_result_ids,
-            "created_at": task.created_at.isoformat()
+            "created_at": task.created_at.isoformat(),
         }
     except MultiTaskServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,5 +1,7 @@
 # API 文档
 
+> **提示**：与运行中服务不一致时，以 **`http://<host>:<port>/docs` OpenAPI** 及源码为准。本文已按当前后端实现校对关键段落（健康检查、上传、问答、限流、工作流）。
+
 ## 基础信息
 - 基地址: `http://localhost:3000`
 - API 版本: v1
@@ -26,16 +28,19 @@ Authorization: Bearer {access_token}
 ### 测试接口
 
 #### GET /api
-测试接口，返回简单的问候信息。
+健康检查。
 
 **请求**
 ```
 GET /api
 ```
 
-**响应**
-```
-"Hello, World!"
+**响应** (200)
+```json
+{
+  "status": "ok",
+  "version": "2.0.0"
+}
 ```
 
 ---
@@ -117,7 +122,7 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "logout ok"
+  "message": "已成功登出"
 }
 ```
 
@@ -259,8 +264,7 @@ Authorization: Bearer {access_token}
 ### POST /api/v1/images/upload
 上传图片文件。
 
-当前版本上传接口仅保存文件与图片记录，不会自动触发 OCR/结构化/关系图任务。
-如需继续处理，请手动调用 `POST /api/v1/images/{image_id}/ocr`。
+**当前实现**（`app/routers/images.py`）：仅保存文件并写入 `Image` 表，**不会**在此路由内调用 Celery 或触发 OCR。OCR 需再调用 `POST /api/v1/images/{image_id}/ocr`；结构化、关系图需分别调用对应接口。
 
 **请求头**
 ```
@@ -270,7 +274,6 @@ Content-Type: multipart/form-data
 
 **请求参数**
 - `image` (file) - 图片文件（必需）
-- `user_id` (query) - 用户ID，默认为 1
 
 **支持格式**
 - .jpg, .jpeg, .png, .gif, .bmp, .webp, .tiff
@@ -710,10 +713,10 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "Multi task created successfully",
+  "message": "Multi task created successfully, analysis started automatically",
   "multi_task_id": 1,
   "structured_result_ids": [1, 2, 3],
-  "created_at": "2024-01-01T12:00:00"
+  "created_at": "2024-01-01T12:00:00+08:00"
 }
 ```
 
@@ -740,11 +743,11 @@ Authorization: Bearer {access_token}
 ```json
 {
   "success": true,
-  "message": "Multi task created from images successfully",
+  "message": "Multi task created from images successfully, analysis started automatically",
   "multi_task_id": 1,
   "image_ids": [1, 2, 3],
   "structured_result_ids": [5, 8, 12],
-  "created_at": "2024-01-01T12:00:00"
+  "created_at": "2024-01-01T12:00:00+08:00"
 }
 ```
 
@@ -883,11 +886,10 @@ Authorization: Bearer {access_token}
 }
 ```
 
-**算法说明**
-跨文档分析采用了深化的实体消歧与对齐算法（Deep Entity Resolution）。
-- **多维相似度计算**: 综合考量姓名匹配(40%)、角色匹配(20%)、时间相近性(20%)、地点相关性(20%)。
-- **动态聚类**: 基于贪心策略将潜在实体归类到实体簇。
-- **图谱构建**: 节点代表实体簇，边基于实体在文档中的共现关系。
+**算法说明**（与 `app/services/analysis_components/entity_resolver.py` 一致，细节以源码为准）
+
+- **姓名**：字符相似与 DashScope 文本向量融合后，再与时间（`Time_AD` 接近度）、地点（相同/包含/前缀）加权；综合分超过阈值则合并为同一实体。
+- **图谱**：在 NetworkX 上构建跨文书关系，含买卖、见证、地块流转等边类型，并导出 ECharts 力导向数据。
 
 ---
 
@@ -921,7 +923,7 @@ Authorization: Bearer {access_token}
 ## 智能问答路由 (前缀: /api/v1/chat)
 
 ### POST /api/v1/chat/query
-基于知识库的智能问答（RAG）。
+智能问答。上下文由 `rag_service` **从数据库拉取当前用户最近若干条已完成 OCR 的文书**拼成（非 Chroma 向量检索主路径）；生成模型为 DashScope **qwen-turbo**。支持可选多轮 `history`。
 
 **请求头**
 ```
@@ -931,7 +933,8 @@ Authorization: Bearer {access_token}
 **请求体**
 ```json
 {
-  "question": "帮我找出道光年间所有的土地交易"
+  "question": "帮我找出道光年间所有的土地交易",
+  "history": null
 }
 ```
 
@@ -940,13 +943,27 @@ Authorization: Bearer {access_token}
 {
   "success": true,
   "data": {
-    "answer": "根据现有文档，道光年间共有以下几笔土地交易：1. 道光十二年，恒忠将田产卖给篋叙堂...",
+    "answer": "根据参考文书……",
     "sources": [
-      "时间：道光十二年二月初二日，卖方：恒忠，买方：篋叙堂..."
+      {
+        "index": 1,
+        "doc_id": 1,
+        "image_id": 1,
+        "filename": "#1 示例",
+        "time": "",
+        "location": "",
+        "seller": "",
+        "buyer": "",
+        "price": "",
+        "subject": "",
+        "excerpt": "……"
+      }
     ]
   }
 }
 ```
+
+另支持流式：`POST /api/v1/chat/query-stream`（SSE）。知识库索引状态：`GET /api/v1/chat/kb-status`；重建索引：`POST /api/v1/chat/reindex`。
 
 ---
 
@@ -973,7 +990,7 @@ Authorization: Bearer {access_token}
 
 ## 速率限制
 
-目前无速率限制
+安装 **`slowapi`** 时，`main.py` 会启用默认 **`200/minute`**（按客户端 IP）。未安装 `slowapi` 时不会限流，仅打日志警告。
 
 ---
 
@@ -989,10 +1006,10 @@ POST /api/v1/auth/login     -> 登录，获得 access_token
 
 #### 2. 图片处理流程
 ```
-POST /api/v1/images/upload              -> 上传图片，获得 imageId（当前版本仅保存图片，不自动触发后续分析）
-POST /api/v1/images/{imageId}/ocr       -> 触发 OCR 识别
-GET  /api/v1/images/{imageId}/ocr-results  -> 获取 OCR 结果列表
-GET  /api/v1/ocr-results/{ocrId}        -> 获取单个 OCR 结果详情
+POST /api/v1/images/upload                 -> 上传图片，获得 imageId（仅落库，不自动 OCR）
+POST /api/v1/images/{imageId}/ocr          -> 触发 OCR（Celery）
+GET  /api/v1/images/{imageId}/ocr-results  -> 获取 OCR 结果 ID 列表
+GET  /api/v1/ocr-results/{ocrId}           -> 获取单个 OCR 详情
 ```
 
 #### 3. 结构化分析流程

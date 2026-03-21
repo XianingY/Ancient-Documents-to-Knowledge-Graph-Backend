@@ -3,6 +3,10 @@ input/
 output/
 database/*.db
 upload/
+
+# SSH 私钥（严禁提交）
+*.pem
+*.key
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
