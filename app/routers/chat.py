@@ -207,71 +207,71 @@ def _reindex_all_sync(user_id: int):
             .filter(OcrResult.status == OcrStatus.DONE, Image.user_id == user_id)
             .all()
         )
-    indexed, skipped = 0, 0
-    _EMPTY = {"未识别", "未记载", "None", "null", ""}
+        indexed, skipped = 0, 0
+        _EMPTY = {"未识别", "未记载", "None", "null", ""}
 
-    for ocr in ocr_results:
-        if not ocr.raw_text:
-            skipped += 1
-            continue
-        try:
-            struct = (
-                db.query(StructuredResult)
-                .filter(
-                    StructuredResult.ocr_result_id == ocr.id,
-                    StructuredResult.status == OcrStatus.DONE,
+        for ocr in ocr_results:
+            if not ocr.raw_text:
+                skipped += 1
+                continue
+            try:
+                struct = (
+                    db.query(StructuredResult)
+                    .filter(
+                        StructuredResult.ocr_result_id == ocr.id,
+                        StructuredResult.status == OcrStatus.DONE,
+                    )
+                    .order_by(StructuredResult.id.desc())
+                    .first()
                 )
-                .order_by(StructuredResult.id.desc())
-                .first()
-            )
 
-            metadata: dict = {
-                "user_id": user_id,
-                "ocr_result_id": ocr.id,
-                "image_id": ocr.image_id,
-                "filename": ocr.image.filename if ocr.image else "",
-                "structured_result_id": "",
-                "time": "", "location": "", "seller": "",
-                "buyer": "", "price": "", "subject": "",
-            }
-            rich_text = ocr.raw_text
+                metadata: dict = {
+                    "user_id": user_id,
+                    "ocr_result_id": ocr.id,
+                    "image_id": ocr.image_id,
+                    "filename": ocr.image.filename if ocr.image else "",
+                    "structured_result_id": "",
+                    "time": "", "location": "", "seller": "",
+                    "buyer": "", "price": "", "subject": "",
+                }
+                rich_text = ocr.raw_text
 
-            if struct and struct.content:
-                import json as _json_inner
-                try:
-                    sd = _json_inner.loads(struct.content)
-                except Exception:
-                    sd = {}
+                if struct and struct.content:
+                    import json as _json_inner
+                    try:
+                        sd = _json_inner.loads(struct.content)
+                    except Exception:
+                        sd = {}
 
-                def _f(k: str) -> str:
-                    v = str(sd.get(k, "")).strip()
-                    return v if v not in _EMPTY else ""
+                    def _f(k: str) -> str:
+                        v = str(sd.get(k, "")).strip()
+                        return v if v not in _EMPTY else ""
 
-                metadata.update({
-                    "structured_result_id": struct.id,
-                    "filename": sd.get("filename", metadata["filename"]),
-                    "time": _f("Time"), "location": _f("Location"),
-                    "seller": _f("Seller"), "buyer": _f("Buyer"),
-                    "price": _f("Price"), "subject": _f("Subject"),
-                })
-                tags = [(k, metadata[k]) for k in
-                        ("time", "location", "seller", "buyer", "price", "subject")
-                        if metadata[k]]
-                if tags:
-                    tag_str = "　".join(f"【{label_map[k]}】{v}" for k, v in tags)
-                    rich_text = ocr.raw_text + "\n" + tag_str
+                    metadata.update({
+                        "structured_result_id": struct.id,
+                        "filename": sd.get("filename", metadata["filename"]),
+                        "time": _f("Time"), "location": _f("Location"),
+                        "seller": _f("Seller"), "buyer": _f("Buyer"),
+                        "price": _f("Price"), "subject": _f("Subject"),
+                    })
+                    tags = [(k, metadata[k]) for k in
+                            ("time", "location", "seller", "buyer", "price", "subject")
+                            if metadata[k]]
+                    if tags:
+                        tag_str = "　".join(f"【{label_map[k]}】{v}" for k, v in tags)
+                        rich_text = ocr.raw_text + "\n" + tag_str
 
-            embedding = _get_text_embeddings_sync(rich_text)
-            upsert_document(
-                doc_id=f"ocr_{ocr.id}",
-                text=rich_text,
-                embedding=embedding,
-                metadata=metadata,
-            )
-            indexed += 1
-        except Exception as e:
-            logger.warning("reindex_doc_failed", extra={"ocr_id": ocr.id, "error": str(e)})
-            skipped += 1
+                embedding = _get_text_embeddings_sync(rich_text)
+                upsert_document(
+                    doc_id=f"ocr_{ocr.id}",
+                    text=rich_text,
+                    embedding=embedding,
+                    metadata=metadata,
+                )
+                indexed += 1
+            except Exception as e:
+                logger.warning("reindex_doc_failed", extra={"ocr_id": ocr.id, "error": str(e)})
+                skipped += 1
 
         return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
     finally:

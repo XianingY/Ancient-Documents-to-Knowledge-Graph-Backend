@@ -122,6 +122,15 @@ async def upload_image(
 
         logger.info("image_uploaded", extra={"image_id": db_image.id, "user_id": user_id, "size": file_size})
 
+        # 上传成功后自动排队 OCR（与前端「自动识别」一致）；队列失败不阻断上传
+        try:
+            task_ocr_image.delay(db_image.id)
+        except Exception as queue_err:
+            logger.warning(
+                "ocr_queue_failed_after_upload",
+                extra={"image_id": db_image.id, "error": str(queue_err)},
+            )
+
         return {
             "success": True,
             "imageId": db_image.id,
