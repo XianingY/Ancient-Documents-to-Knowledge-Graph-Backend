@@ -62,14 +62,18 @@ _MAX_CONTEXT = 20
 
 def _vector_search_sync(question: str, user_id: int, top_k: int = _VECTOR_TOP_K) -> list:
     """通过 ChromaDB 进行语义向量检索，返回与问题最相关的文书。"""
-    from app.services.vector_store.chroma import query_documents
+    try:
+        from app.services.vector_store.chroma import query_documents
 
-    embedding = _get_text_embeddings_sync(question)
-    where = {"user_id": user_id}
-    results = query_documents(embedding, top_k, where)
-    if not results:
-        results = query_documents(embedding, top_k, None)
-    return results
+        embedding = _get_text_embeddings_sync(question)
+        where = {"user_id": user_id}
+        results = query_documents(embedding, top_k, where)
+        if not results:
+            results = query_documents(embedding, top_k, None)
+        return results
+    except Exception as e:
+        logger.warning("vector_search_failed", extra={"error": str(e)})
+        return []
 
 
 async def retrieve_context(
@@ -91,36 +95,42 @@ async def retrieve_context(
 def _fetch_latest_docs_sync(db: Session, user_id: int, top_n: int = _DB_RECENT_N) -> list:
     """
     从数据库获取当前用户最新 top_n 份已完成 OCR 的文书。
-    每张图片只取最新的一条 OCR 结果（按 OcrResult.id DESC）。
+    每张图片只取最新的一条 OCR 结果（按 OcrResult.id DESC 去重）。
     """
-    from database import Image, OcrResult, StructuredResult, OcrStatus
-    from sqlalchemy import func
+    from database import Image, OcrResult, OcrStatus
+    from sqlalchemy.orm import joinedload
 
-    latest_ocr_subq = (
-        db.query(
-            OcrResult.image_id,
-            func.max(OcrResult.id).label("max_ocr_id"),
+    try:
+        ocr_all = (
+            db.query(OcrResult)
+            .options(joinedload(OcrResult.image))
+            .join(Image, OcrResult.image_id == Image.id)
+            .filter(
+                OcrResult.status == OcrStatus.DONE,
+                Image.user_id == user_id,
+                OcrResult.raw_text.isnot(None),
+            )
+            .order_by(OcrResult.id.desc())
+            .all()
         )
-        .join(Image, OcrResult.image_id == Image.id)
-        .filter(
-            OcrResult.status == OcrStatus.DONE,
-            Image.user_id == user_id,
-            OcrResult.raw_text.isnot(None),
+
+        seen_images: set = set()
+        unique_ocrs: list = []
+        for ocr in ocr_all:
+            if ocr.image_id not in seen_images:
+                seen_images.add(ocr.image_id)
+                unique_ocrs.append(ocr)
+
+        unique_ocrs.sort(
+            key=lambda o: o.image.upload_time if o.image else o.id,
+            reverse=True,
         )
-        .group_by(OcrResult.image_id)
-        .subquery()
-    )
+        unique_ocrs = unique_ocrs[:top_n]
 
-    ocr_list = (
-        db.query(OcrResult)
-        .join(latest_ocr_subq, OcrResult.id == latest_ocr_subq.c.max_ocr_id)
-        .join(Image, OcrResult.image_id == Image.id)
-        .order_by(Image.upload_time.desc())
-        .limit(top_n)
-        .all()
-    )
-
-    return [_ocr_to_context_item(db, ocr, user_id) for ocr in ocr_list]
+        return [_ocr_to_context_item(db, ocr, user_id) for ocr in unique_ocrs]
+    except Exception as e:
+        logger.warning("fetch_latest_docs_failed", extra={"error": str(e)})
+        return []
 
 
 def _ocr_to_context_item(db: Session, ocr, user_id: int) -> dict:
@@ -187,11 +197,17 @@ def _hybrid_retrieve_sync(
       2. DB 补充：获取最新上传的 db_recent_n 篇文书（确保新文书不遗漏）
       3. 按 image_id 去重合并，向量检索结果优先
       4. 最终返回不超过 max_context 条
+    若向量检索失败，自动降级为纯 DB 检索（取更多文书作为补偿）。
     """
     seen_image_ids: set = set()
     merged: list = []
 
-    vector_results = _vector_search_sync(question, user_id, vector_top_k)
+    try:
+        vector_results = _vector_search_sync(question, user_id, vector_top_k)
+    except Exception as e:
+        logger.warning("hybrid_vector_search_error", extra={"error": str(e)})
+        vector_results = []
+
     for item in vector_results:
         img_id = item.get("metadata", {}).get("image_id")
         if img_id and img_id in seen_image_ids:
@@ -200,7 +216,13 @@ def _hybrid_retrieve_sync(
             seen_image_ids.add(img_id)
         merged.append(item)
 
-    db_results = _fetch_latest_docs_sync(db, user_id, db_recent_n)
+    fallback_n = max_context if not vector_results else db_recent_n
+    try:
+        db_results = _fetch_latest_docs_sync(db, user_id, fallback_n)
+    except Exception as e:
+        logger.warning("hybrid_db_fetch_error", extra={"error": str(e)})
+        db_results = []
+
     for item in db_results:
         img_id = item.get("metadata", {}).get("image_id")
         if img_id and img_id in seen_image_ids:

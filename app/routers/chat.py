@@ -198,33 +198,30 @@ def _reindex_all_sync(user_id: int):
     from app.services.rag_service import _get_text_embeddings_sync
     from app.services.vector_store.chroma import upsert_document
     from database import Image, SessionLocal
-    from sqlalchemy import func
     import json as _json_inner
 
     db = SessionLocal()
     try:
         _EMPTY = {"未识别", "未记载", "None", "null", ""}
 
-        latest_ocr_subq = (
-            db.query(
-                OcrResult.image_id,
-                func.max(OcrResult.id).label("max_ocr_id"),
-            )
+        all_ocr = (
+            db.query(OcrResult)
             .join(Image, OcrResult.image_id == Image.id)
             .filter(
                 OcrResult.status == OcrStatus.DONE,
                 Image.user_id == user_id,
                 OcrResult.raw_text.isnot(None),
             )
-            .group_by(OcrResult.image_id)
-            .subquery()
-        )
-
-        ocr_results = (
-            db.query(OcrResult)
-            .join(latest_ocr_subq, OcrResult.id == latest_ocr_subq.c.max_ocr_id)
+            .order_by(OcrResult.id.desc())
             .all()
         )
+
+        seen_images: set = set()
+        ocr_results: list = []
+        for ocr in all_ocr:
+            if ocr.image_id not in seen_images:
+                seen_images.add(ocr.image_id)
+                ocr_results.append(ocr)
 
         indexed, skipped = 0, 0
 
