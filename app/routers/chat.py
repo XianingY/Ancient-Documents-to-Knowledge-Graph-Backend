@@ -5,15 +5,15 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import Image, OcrResult, OcrStatus, StructuredResult, get_db
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
+from app.core.rate_limit import rate_limit
 from app.services.rag_service import rag_pipeline
 
 logger = get_logger(__name__)
@@ -41,14 +41,14 @@ class ChatQueryRequest(BaseModel):
         "支持多轮对话（传入 history）和引用溯源（返回 sources）。"
     ),
 )
+@rate_limit("30/minute")
 async def chat_query(
+    _req: Request,
     request: ChatQueryRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
-        payload = verify_token(credentials.credentials)
-        user_id = payload.get("user_id")
         history = (
             [{"role": h.role, "content": h.content} for h in request.history]
             if request.history else None
@@ -61,7 +61,7 @@ async def chat_query(
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("chat_query_error", extra={"error": str(e), "traceback": tb})
-        raise HTTPException(status_code=500, detail=f"问答服务异常：{e}")
+        raise HTTPException(status_code=500, detail="问答服务异常，请稍后重试")
 
 
 @router.post(
@@ -78,12 +78,10 @@ async def chat_query(
 )
 async def chat_query_stream(
     request: ChatQueryRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
-        payload = verify_token(credentials.credentials)
-        user_id = payload.get("user_id")
         history = (
             [{"role": h.role, "content": h.content} for h in request.history]
             if request.history else None
@@ -160,7 +158,7 @@ async def chat_query_stream(
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("chat_stream_error", extra={"error": str(e), "traceback": tb})
-        raise HTTPException(status_code=500, detail=f"流式问答服务异常：{e}")
+        raise HTTPException(status_code=500, detail="流式问答服务异常，请稍后重试")
 
 
 @router.get(
@@ -172,25 +170,16 @@ async def chat_query_stream(
     ),
 )
 async def kb_status(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    payload = verify_token(credentials.credentials)
-    raw_uid = payload.get("user_id")
-    if raw_uid is None:
-        return {"success": True, "data": {"indexed_count": 0}}
-    try:
-        uid = int(raw_uid)
-    except (TypeError, ValueError):
-        return {"success": True, "data": {"indexed_count": 0}}
-
     try:
         n_eligible = (
             db.query(OcrResult)
             .join(Image, OcrResult.image_id == Image.id)
             .filter(
                 OcrResult.status == OcrStatus.DONE,
-                Image.user_id == uid,
+                Image.user_id == user_id,
                 OcrResult.raw_text.isnot(None),
             )
             .count()
@@ -200,21 +189,24 @@ async def kb_status(
         return {"success": True, "data": {"indexed_count": 0}}
 
 
-def _reindex_all_sync(db: Session, user_id: int):
+def _reindex_all_sync(user_id: int):
     """
     遍历当前用户所有 OCR 完成的文档，将其写入 ChromaDB（upsert）。
     只索引属于 user_id 的图片，并将 user_id 写入 metadata 实现资料库隔离。
+    在后台任务中运行，创建独立的 DB session 避免使用已关闭的请求级 session。
     """
     from app.services.rag_service import _get_text_embeddings_sync
     from app.services.vector_store.chroma import upsert_document
-    from database import Image
+    from database import Image, SessionLocal
 
-    ocr_results = (
-        db.query(OcrResult)
-        .join(Image, OcrResult.image_id == Image.id)
-        .filter(OcrResult.status == OcrStatus.DONE, Image.user_id == user_id)
-        .all()
-    )
+    db = SessionLocal()
+    try:
+        ocr_results = (
+            db.query(OcrResult)
+            .join(Image, OcrResult.image_id == Image.id)
+            .filter(OcrResult.status == OcrStatus.DONE, Image.user_id == user_id)
+            .all()
+        )
     indexed, skipped = 0, 0
     _EMPTY = {"未识别", "未记载", "None", "null", ""}
 
@@ -281,7 +273,9 @@ def _reindex_all_sync(db: Session, user_id: int):
             logger.warning("reindex_doc_failed", extra={"ocr_id": ocr.id, "error": str(e)})
             skipped += 1
 
-    return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
+        return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
+    finally:
+        db.close()
 
 
 label_map = {
@@ -300,12 +294,9 @@ label_map = {
 )
 async def reindex(
     background_tasks: BackgroundTasks,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    payload = verify_token(credentials.credentials)
-    user_id = payload.get("user_id")
-    background_tasks.add_task(_reindex_all_sync, db, user_id)
+    background_tasks.add_task(_reindex_all_sync, user_id)
     logger.info("reindex_triggered", extra={"user_id": user_id})
     return {
         "success": True,

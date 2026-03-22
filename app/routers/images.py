@@ -4,9 +4,8 @@ import re
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from fastapi.security import HTTPAuthorizationCredentials
 from PIL import Image as PILImage, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
@@ -21,8 +20,9 @@ from database import (
     get_db,
 )
 from app.core.config import settings
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
+from app.core.rate_limit import rate_limit
 from app.worker.tasks import task_ocr_image
 
 logger = get_logger(__name__)
@@ -66,17 +66,17 @@ def _ensure_thumbnail(image_path: str, thumbnail_path: str) -> None:
     except UnidentifiedImageError:
         raise HTTPException(status_code=400, detail="无法识别的图片格式")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成缩略图失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="生成缩略图失败")
 
 
 @router.post("/upload", summary="上传地契图片", description="支持 JPG/PNG/WEBP/GIF/BMP/TIFF 格式，最大 10MB。上传后自动触发 OCR → 结构化分析 → 知识图谱生成流水线")
+@rate_limit("30/minute")
 async def upload_image(
+    _req: Request,
     image: UploadFile = File(...),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    payload = verify_token(credentials.credentials)
-    user_id = payload.get("user_id")
 
     ext = os.path.splitext(image.filename or "")[1].lower()
     if ext not in settings.ALLOWED_EXTENSIONS:
@@ -88,7 +88,7 @@ async def upload_image(
     try:
         file_data = await image.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"读取文件失败: {str(e)}")
+        raise HTTPException(status_code=400, detail="读取文件失败")
 
     file_size = len(file_data)
     if file_size > settings.MAX_FILE_SIZE:
@@ -107,7 +107,7 @@ async def upload_image(
         with open(file_path, "wb") as buf:
             buf.write(file_data)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"保存文件失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="保存文件失败")
 
     try:
         db_image = Image(
@@ -137,17 +137,16 @@ async def upload_image(
                 os.remove(file_path)
             except OSError:
                 pass
-        raise HTTPException(status_code=500, detail=f"保存到数据库失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="保存到数据库失败")
 
 
 @router.get("/{image_id}", summary="获取原始图片", description="返回指定图片的原始文件流（FileResponse）")
 async def get_image(
     image_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    db_image = db.query(Image).filter(Image.id == image_id).first()
+    db_image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not db_image:
         raise HTTPException(status_code=404, detail="image not found")
     if not os.path.exists(str(db_image.path)):
@@ -158,11 +157,10 @@ async def get_image(
 @router.get("/{image_id}/thumbnail", summary="获取缩略图", description="返回 320×320 JPEG 缩略图，首次访问时自动生成并缓存")
 async def get_thumbnail(
     image_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    db_image = db.query(Image).filter(Image.id == image_id).first()
+    db_image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not db_image:
         raise HTTPException(status_code=404, detail="image not found")
     if not os.path.exists(str(db_image.path)):
@@ -176,11 +174,10 @@ async def get_thumbnail(
 @router.get("/{image_id}/info", summary="获取图片元信息", description="返回图片的基本元数据：ID、文件名、上传时间")
 async def get_image_info(
     image_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    db_image = db.query(Image).filter(Image.id == image_id).first()
+    db_image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not db_image:
         raise HTTPException(status_code=404, detail="image not found")
 
@@ -198,17 +195,12 @@ async def get_image_info(
 @router.delete("/{image_id}", summary="删除图片及全部关联数据", description="级联删除：图片文件 + OCR结果 + 结构化结果 + 关系图 + 跨文档任务关联，操作不可逆")
 async def delete_image(
     image_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    payload = verify_token(credentials.credentials)
-    user_id = payload.get("user_id")
-
-    db_image = db.query(Image).filter(Image.id == image_id).first()
+    db_image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not db_image:
         raise HTTPException(status_code=404, detail="image not found")
-    if db_image.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权删除该图片")
 
     original_path = str(db_image.path)
     thumbnail_path = _build_thumbnail_path(db_image.filename)
@@ -257,7 +249,7 @@ async def delete_image(
         db.commit()
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"删除图片失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="删除图片失败")
 
     removed_files: List[str] = []
     for path in (original_path, thumbnail_path):
@@ -295,11 +287,10 @@ async def delete_image(
 @router.post("/{image_id}/ocr", summary="手动触发 OCR", description="将图片加入 OCR 任务队列（Celery 异步执行），可用于重新识别")
 async def trigger_ocr(
     image_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    image = db.query(Image).filter(Image.id == image_id).first()
+    image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="图片不存在")
 
@@ -314,11 +305,10 @@ async def get_image_ocr_results(
     image_id: int,
     skip: int = 0,
     limit: int = 10,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    image = db.query(Image).filter(Image.id == image_id).first()
+    image = db.query(Image).filter(Image.id == image_id, Image.user_id == user_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="图片不存在")
 

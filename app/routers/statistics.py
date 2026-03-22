@@ -7,12 +7,11 @@ from collections import Counter
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database import Image, OcrResult, StructuredResult, User, get_db
+from database import Image, OcrResult, OcrStatus, StructuredResult, User, get_db
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/statistics", tags=["数据统计"])
@@ -24,7 +23,7 @@ def _parse_structured_results(db: Session, user_id: int) -> List[Dict[str, Any]]
         db.query(StructuredResult.content)
         .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
         .join(Image, OcrResult.image_id == Image.id)
-        .filter(Image.user_id == user_id, StructuredResult.status == "done")
+        .filter(Image.user_id == user_id, StructuredResult.status == OcrStatus.DONE)
         .all()
     )
     results = []
@@ -43,19 +42,9 @@ def _parse_structured_results(db: Session, user_id: int) -> List[Dict[str, Any]]
     description="聚合当前用户所有已分析文书的统计数据：文书总数、分析完成数、时间年代分布、地点TOP10、高频人物TOP10、历史地价趋势",
 )
 async def get_statistics(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    """
-    返回当前用户文书库的综合统计数据：
-    - 文书总数 / 已完成分析数
-    - 时间分布（公元年份）
-    - 地点 Top10
-    - 价格趋势（按年份分组）
-    - 人物出现频次 Top10（卖方 / 买方 / 中人合并）
-    """
-    payload = verify_token(credentials.credentials)
-    user_id = payload.get("user_id")
 
     # 文书总数
     total_images = db.query(Image).filter(Image.user_id == user_id).count()
@@ -63,7 +52,7 @@ async def get_statistics(
         db.query(StructuredResult)
         .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
         .join(Image, OcrResult.image_id == Image.id)
-        .filter(Image.user_id == user_id, StructuredResult.status == "done")
+        .filter(Image.user_id == user_id, StructuredResult.status == OcrStatus.DONE)
         .count()
     )
 

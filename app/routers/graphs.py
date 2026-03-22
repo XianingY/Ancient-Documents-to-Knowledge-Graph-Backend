@@ -2,13 +2,12 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import MultiRelationGraph, RelationGraph, StructuredResult, MultiTask, get_db
+from database import Image, OcrResult, MultiRelationGraph, RelationGraph, StructuredResult, MultiTask, get_db
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
 from app.worker.tasks import task_analyze_structured_result, task_analyze_multi_task
 
 logger = get_logger(__name__)
@@ -31,12 +30,15 @@ relation_graph_router = APIRouter(prefix="/api/v1/relation-graphs")
 @relation_graph_router.post("", summary="触发单文档关系图生成", description="对指定结构化结果生成 ECharts 格式知识图谱（Celery 异步执行）")
 async def create_relation_graph(
     request: CreateRelationGraphRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
     structured_result = (
-        db.query(StructuredResult).filter(StructuredResult.id == request.structured_result_id).first()
+        db.query(StructuredResult)
+        .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(StructuredResult.id == request.structured_result_id, Image.user_id == user_id)
+        .first()
     )
     if not structured_result:
         raise HTTPException(status_code=404, detail="StructuredResult不存在")
@@ -53,11 +55,17 @@ async def create_relation_graph(
 @relation_graph_router.get("/{relation_graph_id}", summary="获取单文档关系图", description="返回指定关系图的 ECharts 节点/边数据（content字段），status 为 done 时可渲染")
 async def get_relation_graph(
     relation_graph_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    relation_graph = db.query(RelationGraph).filter(RelationGraph.id == relation_graph_id).first()
+    relation_graph = (
+        db.query(RelationGraph)
+        .join(StructuredResult, RelationGraph.structured_result_id == StructuredResult.id)
+        .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(RelationGraph.id == relation_graph_id, Image.user_id == user_id)
+        .first()
+    )
     if not relation_graph:
         raise HTTPException(status_code=404, detail="RelationGraph不存在")
 
@@ -86,11 +94,10 @@ multi_relation_graph_router = APIRouter(prefix="/api/v1/multi-relation-graphs")
 @multi_relation_graph_router.post("", summary="触发跨文档关系图生成", description="对指定跨文档任务（MultiTask）执行实体消歧 + 多图合并，生成跨文档知识图谱（Celery 异步执行）")
 async def create_multi_relation_graph(
     request: CreateMultiRelationGraphRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    multi_task = db.query(MultiTask).filter(MultiTask.id == request.multi_task_id).first()
+    multi_task = db.query(MultiTask).filter(MultiTask.id == request.multi_task_id, MultiTask.user_id == user_id).first()
     if not multi_task:
         raise HTTPException(status_code=404, detail="MultiTask不存在")
 
@@ -106,12 +113,14 @@ async def create_multi_relation_graph(
 @multi_relation_graph_router.get("/{multi_relation_graph_id}", summary="获取跨文档关系图", description="返回跨文档合并知识图谱数据，节点包含原始文书溯源信息")
 async def get_multi_relation_graph(
     multi_relation_graph_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
     multi_relation_graph = (
-        db.query(MultiRelationGraph).filter(MultiRelationGraph.id == multi_relation_graph_id).first()
+        db.query(MultiRelationGraph)
+        .join(MultiTask, MultiRelationGraph.multi_task_id == MultiTask.id)
+        .filter(MultiRelationGraph.id == multi_relation_graph_id, MultiTask.user_id == user_id)
+        .first()
     )
     if not multi_relation_graph:
         raise HTTPException(status_code=404, detail="MultiRelationGraph不存在")
