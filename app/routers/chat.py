@@ -1,19 +1,19 @@
-"""RAG 智能问答路由"""
+"""智能问答路由（混合 RAG：向量检索 + DB 时序补充 + qwen-turbo；见 rag_service）"""
 import asyncio
 import json as _json
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import Image, OcrResult, OcrStatus, StructuredResult, get_db
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
+from app.core.rate_limit import rate_limit
 from app.services.rag_service import rag_pipeline
 
 logger = get_logger(__name__)
@@ -35,40 +35,41 @@ class ChatQueryRequest(BaseModel):
 
 @router.post(
     "/query",
-    summary="RAG 智能问答（非流式）",
+    summary="智能问答（非流式）",
     description=(
-        "基于知识库进行向量检索增强生成（RAG）问答，一次性返回完整回答。"
-        "支持多轮对话（传入 history）和引用溯源（返回 sources）。"
+        "混合 RAG：先通过 ChromaDB 向量检索语义最相关的文书，"
+        "再从数据库补充最新上传的文书，去重合并后调用 qwen-turbo 生成回答。"
+        "支持多轮 history（服务端最多取最近 6 轮）与 sources 引用溯源。"
     ),
 )
+@rate_limit("30/minute")
 async def chat_query(
-    request: ChatQueryRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    body: ChatQueryRequest,
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
-        payload = verify_token(credentials.credentials)
-        user_id = payload.get("user_id")
         history = (
-            [{"role": h.role, "content": h.content} for h in request.history]
-            if request.history else None
+            [{"role": h.role, "content": h.content} for h in body.history]
+            if body.history else None
         )
-        logger.info("chat_query", extra={"user_id": user_id, "question_len": len(request.question)})
-        result = await rag_pipeline(request.question, db, history, user_id=user_id)
+        logger.info("chat_query", extra={"user_id": user_id, "question_len": len(body.question)})
+        result = await rag_pipeline(body.question, db, history, user_id=user_id)
         return {"success": True, "data": result}
     except HTTPException:
         raise
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("chat_query_error", extra={"error": str(e), "traceback": tb})
-        raise HTTPException(status_code=500, detail=f"问答服务异常：{e}")
+        raise HTTPException(status_code=500, detail="问答服务异常，请稍后重试")
 
 
 @router.post(
     "/query-stream",
-    summary="RAG 流式智能问答（SSE）",
+    summary="智能问答（SSE 流式）",
     description=(
-        "与 /query 功能相同，但通过 Server-Sent Events 流式推送回答。\n\n"
+        "与 /query 相同的混合 RAG 检索策略（向量检索 + DB 时序补充），通过 Server-Sent Events 流式推送回答。\n\n"
         "事件格式（每条以 `data: ` 开头，两个换行结束）：\n"
         "- `{\"type\": \"sources\", \"sources\": [...]}` — 先发送引用来源\n"
         "- `{\"type\": \"text\", \"delta\": \"...\"}` — 逐块推送答案增量\n"
@@ -78,12 +79,10 @@ async def chat_query(
 )
 async def chat_query_stream(
     request: ChatQueryRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
-        payload = verify_token(credentials.credentials)
-        user_id = payload.get("user_id")
         history = (
             [{"role": h.role, "content": h.content} for h in request.history]
             if request.history else None
@@ -91,15 +90,13 @@ async def chat_query_stream(
         logger.info("chat_stream_query", extra={"user_id": user_id, "question_len": len(request.question)})
 
         from app.services.rag_service import (
-            _fetch_latest_docs_sync,
+            hybrid_retrieve,
             _generate_answer_stream_chunks,
             _build_sources,
         )
-        from fastapi.concurrency import run_in_threadpool
 
-        # 直接从 DB 取最新 8 份文书，无需向量嵌入，更快更准
-        context_items = await run_in_threadpool(
-            _fetch_latest_docs_sync, db, user_id or 0, 8
+        context_items = await hybrid_retrieve(
+            request.question, db, user_id or 0,
         )
         sources = _build_sources(context_items)
 
@@ -160,7 +157,7 @@ async def chat_query_stream(
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("chat_stream_error", extra={"error": str(e), "traceback": tb})
-        raise HTTPException(status_code=500, detail=f"流式问答服务异常：{e}")
+        raise HTTPException(status_code=500, detail="流式问答服务异常，请稍后重试")
 
 
 @router.get(
@@ -172,119 +169,131 @@ async def chat_query_stream(
     ),
 )
 async def kb_status(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    payload = verify_token(credentials.credentials)
-    raw_uid = payload.get("user_id")
-    if raw_uid is None:
-        return {"success": True, "data": {"indexed_count": 0}}
     try:
-        uid = int(raw_uid)
-    except (TypeError, ValueError):
-        return {"success": True, "data": {"indexed_count": 0}}
-
-    try:
-        n_eligible = (
-            db.query(OcrResult)
+        from sqlalchemy import func
+        n_images = (
+            db.query(func.count(func.distinct(OcrResult.image_id)))
             .join(Image, OcrResult.image_id == Image.id)
             .filter(
                 OcrResult.status == OcrStatus.DONE,
-                Image.user_id == uid,
+                Image.user_id == user_id,
                 OcrResult.raw_text.isnot(None),
             )
-            .count()
-        )
-        return {"success": True, "data": {"indexed_count": n_eligible}}
+            .scalar()
+        ) or 0
+        return {"success": True, "data": {"indexed_count": n_images}}
     except Exception:
         return {"success": True, "data": {"indexed_count": 0}}
 
 
-def _reindex_all_sync(db: Session, user_id: int):
+def _reindex_all_sync(user_id: int):
     """
-    遍历当前用户所有 OCR 完成的文档，将其写入 ChromaDB（upsert）。
-    只索引属于 user_id 的图片，并将 user_id 写入 metadata 实现资料库隔离。
+    遍历当前用户所有图片，每张图片只索引最新一条 OCR 结果，写入 ChromaDB（upsert）。
+    doc_id = image_{image_id}，确保每张图片在向量库中只有一条记录。
+    在后台任务中运行，创建独立的 DB session 避免使用已关闭的请求级 session。
     """
     from app.services.rag_service import _get_text_embeddings_sync
     from app.services.vector_store.chroma import upsert_document
-    from database import Image
+    from database import Image, SessionLocal
+    import json as _json_inner
 
-    ocr_results = (
-        db.query(OcrResult)
-        .join(Image, OcrResult.image_id == Image.id)
-        .filter(OcrResult.status == OcrStatus.DONE, Image.user_id == user_id)
-        .all()
-    )
-    indexed, skipped = 0, 0
-    _EMPTY = {"未识别", "未记载", "None", "null", ""}
+    db = SessionLocal()
+    try:
+        _EMPTY = {"未识别", "未记载", "None", "null", ""}
 
-    for ocr in ocr_results:
-        if not ocr.raw_text:
-            skipped += 1
-            continue
-        try:
-            struct = (
-                db.query(StructuredResult)
-                .filter(
-                    StructuredResult.ocr_result_id == ocr.id,
-                    StructuredResult.status == OcrStatus.DONE,
+        all_ocr = (
+            db.query(OcrResult)
+            .join(Image, OcrResult.image_id == Image.id)
+            .filter(
+                OcrResult.status == OcrStatus.DONE,
+                Image.user_id == user_id,
+                OcrResult.raw_text.isnot(None),
+            )
+            .order_by(OcrResult.id.desc())
+            .all()
+        )
+
+        seen_images: set = set()
+        ocr_results: list = []
+        for ocr in all_ocr:
+            if ocr.image_id not in seen_images:
+                seen_images.add(ocr.image_id)
+                ocr_results.append(ocr)
+
+        indexed, skipped = 0, 0
+
+        for ocr in ocr_results:
+            if not ocr.raw_text:
+                skipped += 1
+                continue
+            try:
+                struct = (
+                    db.query(StructuredResult)
+                    .filter(
+                        StructuredResult.ocr_result_id == ocr.id,
+                        StructuredResult.status == OcrStatus.DONE,
+                    )
+                    .order_by(StructuredResult.id.desc())
+                    .first()
                 )
-                .order_by(StructuredResult.id.desc())
-                .first()
-            )
 
-            metadata: dict = {
-                "user_id": user_id,
-                "ocr_result_id": ocr.id,
-                "image_id": ocr.image_id,
-                "filename": ocr.image.filename if ocr.image else "",
-                "structured_result_id": "",
-                "time": "", "location": "", "seller": "",
-                "buyer": "", "price": "", "subject": "",
-            }
-            rich_text = ocr.raw_text
+                image_id = ocr.image_id
+                metadata: dict = {
+                    "user_id": user_id,
+                    "ocr_result_id": ocr.id,
+                    "image_id": image_id,
+                    "filename": ocr.image.filename if ocr.image else "",
+                    "structured_result_id": "",
+                    "time": "", "location": "", "seller": "",
+                    "buyer": "", "price": "", "subject": "",
+                }
+                rich_text = ocr.raw_text
 
-            if struct and struct.content:
-                import json as _json_inner
-                try:
-                    sd = _json_inner.loads(struct.content)
-                except Exception:
-                    sd = {}
+                if struct and struct.content:
+                    try:
+                        sd = _json_inner.loads(struct.content)
+                    except Exception:
+                        sd = {}
 
-                def _f(k: str) -> str:
-                    v = str(sd.get(k, "")).strip()
-                    return v if v not in _EMPTY else ""
+                    def _f(k: str) -> str:
+                        v = str(sd.get(k, "")).strip()
+                        return v if v not in _EMPTY else ""
 
-                metadata.update({
-                    "structured_result_id": struct.id,
-                    "filename": sd.get("filename", metadata["filename"]),
-                    "time": _f("Time"), "location": _f("Location"),
-                    "seller": _f("Seller"), "buyer": _f("Buyer"),
-                    "price": _f("Price"), "subject": _f("Subject"),
-                })
-                tags = [(k, metadata[k]) for k in
-                        ("time", "location", "seller", "buyer", "price", "subject")
-                        if metadata[k]]
-                if tags:
-                    tag_str = "　".join(f"【{label_map[k]}】{v}" for k, v in tags)
-                    rich_text = ocr.raw_text + "\n" + tag_str
+                    metadata.update({
+                        "structured_result_id": struct.id,
+                        "filename": sd.get("filename", metadata["filename"]),
+                        "time": _f("Time"), "location": _f("Location"),
+                        "seller": _f("Seller"), "buyer": _f("Buyer"),
+                        "price": _f("Price"), "subject": _f("Subject"),
+                    })
+                    tags = [(k, metadata[k]) for k in
+                            ("time", "location", "seller", "buyer", "price", "subject")
+                            if metadata[k]]
+                    if tags:
+                        tag_str = "　".join(f"【{_LABEL_MAP[k]}】{v}" for k, v in tags)
+                        rich_text = ocr.raw_text + "\n" + tag_str
 
-            embedding = _get_text_embeddings_sync(rich_text)
-            upsert_document(
-                doc_id=f"ocr_{ocr.id}",
-                text=rich_text,
-                embedding=embedding,
-                metadata=metadata,
-            )
-            indexed += 1
-        except Exception as e:
-            logger.warning("reindex_doc_failed", extra={"ocr_id": ocr.id, "error": str(e)})
-            skipped += 1
+                embedding = _get_text_embeddings_sync(rich_text)
+                upsert_document(
+                    doc_id=f"image_{image_id}",
+                    text=rich_text,
+                    embedding=embedding,
+                    metadata=metadata,
+                )
+                indexed += 1
+            except Exception as e:
+                logger.warning("reindex_doc_failed", extra={"image_id": ocr.image_id, "error": str(e)})
+                skipped += 1
 
-    return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
+        return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
+    finally:
+        db.close()
 
 
-label_map = {
+_LABEL_MAP = {
     "time": "时间", "location": "地点", "seller": "卖方",
     "buyer": "买方", "price": "价格", "subject": "标的",
 }
@@ -300,12 +309,9 @@ label_map = {
 )
 async def reindex(
     background_tasks: BackgroundTasks,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    payload = verify_token(credentials.credentials)
-    user_id = payload.get("user_id")
-    background_tasks.add_task(_reindex_all_sync, db, user_id)
+    background_tasks.add_task(_reindex_all_sync, user_id)
     logger.info("reindex_triggered", extra={"user_id": user_id})
     return {
         "success": True,

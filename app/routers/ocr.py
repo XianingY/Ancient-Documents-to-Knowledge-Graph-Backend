@@ -2,11 +2,10 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database import OcrResult, StructuredResult, get_db
-from app.core.security import security, verify_token
+from database import Image, OcrResult, StructuredResult, get_db
+from app.core.deps import get_current_user_id
 
 router = APIRouter(prefix="/api/v1/ocr-results", tags=["OCR结果"])
 
@@ -14,11 +13,15 @@ router = APIRouter(prefix="/api/v1/ocr-results", tags=["OCR结果"])
 @router.get("/{ocr_id}")
 async def get_ocr_result(
     ocr_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    ocr_result = db.query(OcrResult).filter(OcrResult.id == ocr_id).first()
+    ocr_result = (
+        db.query(OcrResult)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(OcrResult.id == ocr_id, Image.user_id == user_id)
+        .first()
+    )
     if not ocr_result:
         raise HTTPException(status_code=404, detail="OCR结果不存在")
 
@@ -39,11 +42,15 @@ async def get_ocr_structured_results(
     ocr_result_id: int,
     skip: int = 0,
     limit: int = 10,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    ocr_result = db.query(OcrResult).filter(OcrResult.id == ocr_result_id).first()
+    ocr_result = (
+        db.query(OcrResult)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(OcrResult.id == ocr_result_id, Image.user_id == user_id)
+        .first()
+    )
     if not ocr_result:
         raise HTTPException(status_code=404, detail="OcrResult不存在")
 

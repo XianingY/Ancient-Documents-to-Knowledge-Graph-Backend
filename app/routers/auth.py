@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -18,6 +18,8 @@ from app.core.security import (
     verify_password,
     verify_token,
 )
+
+from app.core.rate_limit import rate_limit
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
@@ -35,15 +37,16 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/register", summary="用户注册", description="创建新用户账号，用户名唯一，邮箱可选")
-async def register(request: RegisterRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == request.username).first()
+@rate_limit("10/minute")
+async def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.username == payload.username).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="用户名已存在")
 
-    hashed_password = hash_password(request.password)
+    hashed_password = hash_password(payload.password)
     db_user = User(
-        username=request.username,
-        email=request.email,
+        username=payload.username,
+        email=payload.email,
         password_hash=hashed_password,
         created_at=get_beijing_time(),
     )
@@ -63,10 +66,11 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", summary="用户登录", description="验证用户名和密码，成功后返回 JWT Bearer Token，有效期24小时")
-async def login(request: LoginRequest, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == request.username).first()
-    if not db_user or not verify_password(request.password, db_user.password_hash):
-        logger.warning("login_failed", extra={"username": request.username})
+@rate_limit("20/minute")
+async def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == payload.username).first()
+    if not db_user or not verify_password(payload.password, db_user.password_hash):
+        logger.warning("login_failed", extra={"username": payload.username})
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)

@@ -14,9 +14,9 @@
 #
 # 可选镜像：pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 #
-# 关于 chromadb：生产 pip 曾出现 chromadb==0.3.26，该系列依赖 Pydantic v1 的 BaseSettings，
-# 无法与 FastAPI 栈上的 Pydantic 2 共存，且不含 PersistentClient。此处固定为 0.5.23；
-# 若生产仍为 0.3.x，请升级后删除旧向量数据目录或按 Chroma 文档迁移后再启动。
+# 关于 chromadb：勿使用 0.3.x（与 Pydantic 2 冲突）。固定 0.5.23；
+# 若 Celery 日志仍报 BaseSettings，请确认已部署 pydantic_chroma_shim（chroma.py 会先加载），
+# 并执行 pip install pydantic-settings。
 # =============================================================================
 
 # Web

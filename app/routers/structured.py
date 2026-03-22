@@ -2,13 +2,12 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import OcrResult, RelationGraph, StructuredResult, get_db
+from database import Image, OcrResult, RelationGraph, StructuredResult, get_db
+from app.core.deps import get_current_user_id
 from app.core.logger import get_logger
-from app.core.security import security, verify_token
 from app.worker.tasks import task_analyze_ocr_result
 
 logger = get_logger(__name__)
@@ -22,11 +21,15 @@ class CreateStructuredResultRequest(BaseModel):
 @router.post("")
 async def create_structured_result(
     request: CreateStructuredResultRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
-    ocr_result = db.query(OcrResult).filter(OcrResult.id == request.ocr_result_id).first()
+    ocr_result = (
+        db.query(OcrResult)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(OcrResult.id == request.ocr_result_id, Image.user_id == user_id)
+        .first()
+    )
     if not ocr_result:
         raise HTTPException(status_code=404, detail="OcrResult不存在")
 
@@ -42,12 +45,15 @@ async def create_structured_result(
 @router.get("/{structured_result_id}")
 async def get_structured_result(
     structured_result_id: int,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
     structured_result = (
-        db.query(StructuredResult).filter(StructuredResult.id == structured_result_id).first()
+        db.query(StructuredResult)
+        .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(StructuredResult.id == structured_result_id, Image.user_id == user_id)
+        .first()
     )
     if not structured_result:
         raise HTTPException(status_code=404, detail="StructuredResult不存在")
@@ -74,12 +80,15 @@ async def get_structured_relation_graphs(
     structured_result_id: int,
     skip: int = 0,
     limit: int = 10,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    verify_token(credentials.credentials)
     structured_result = (
-        db.query(StructuredResult).filter(StructuredResult.id == structured_result_id).first()
+        db.query(StructuredResult)
+        .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
+        .join(Image, OcrResult.image_id == Image.id)
+        .filter(StructuredResult.id == structured_result_id, Image.user_id == user_id)
+        .first()
     )
     if not structured_result:
         raise HTTPException(status_code=404, detail="StructuredResult不存在")
