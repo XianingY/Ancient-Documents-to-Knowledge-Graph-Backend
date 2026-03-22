@@ -222,10 +222,8 @@ async def delete_image(
     original_path = str(db_image.path)
     thumbnail_path = _build_thumbnail_path(db_image.filename)
 
-    # 提前收集 OCR result ID，用于删除 ChromaDB 向量索引
-    ocr_ids_to_delete = [
-        r.id for r in db.query(OcrResult).filter(OcrResult.image_id == image_id).all()
-    ]
+    # 记录 image_id 用于清理 ChromaDB 向量索引（doc_id = image_{image_id}）
+    chroma_doc_id = f"image_{image_id}"
 
     structured_ids_query = (
         db.query(StructuredResult.id)
@@ -280,8 +278,7 @@ async def delete_image(
     # 同步清理 ChromaDB 向量索引（非阻塞，失败不影响主流程）
     try:
         from app.services.vector_store.chroma import delete_documents
-        chroma_doc_ids = [f"ocr_{oid}" for oid in ocr_ids_to_delete]
-        delete_documents(chroma_doc_ids)
+        delete_documents([chroma_doc_id])
     except Exception as chroma_err:
         logger.warning("chroma_delete_failed", extra={"image_id": image_id, "error": str(chroma_err)})
 

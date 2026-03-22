@@ -1,4 +1,4 @@
-"""智能问答路由（DB 上下文 + qwen-turbo；见 rag_service）"""
+"""智能问答路由（混合 RAG：向量检索 + DB 时序补充 + qwen-turbo；见 rag_service）"""
 import asyncio
 import json as _json
 import traceback
@@ -37,8 +37,8 @@ class ChatQueryRequest(BaseModel):
     "/query",
     summary="智能问答（非流式）",
     description=(
-        "从数据库按上传时间取当前用户最近 8 条已完成 OCR 的文书拼上下文，"
-        "调用 qwen-turbo 生成回答；非 Chroma 向量检索。"
+        "混合 RAG：先通过 ChromaDB 向量检索语义最相关的文书，"
+        "再从数据库补充最新上传的文书，去重合并后调用 qwen-turbo 生成回答。"
         "支持多轮 history（服务端最多取最近 6 轮）与 sources 引用溯源。"
     ),
 )
@@ -69,7 +69,7 @@ async def chat_query(
     "/query-stream",
     summary="智能问答（SSE 流式）",
     description=(
-        "与 /query 相同的上下文构建与模型，通过 Server-Sent Events 流式推送回答。\n\n"
+        "与 /query 相同的混合 RAG 检索策略（向量检索 + DB 时序补充），通过 Server-Sent Events 流式推送回答。\n\n"
         "事件格式（每条以 `data: ` 开头，两个换行结束）：\n"
         "- `{\"type\": \"sources\", \"sources\": [...]}` — 先发送引用来源\n"
         "- `{\"type\": \"text\", \"delta\": \"...\"}` — 逐块推送答案增量\n"
@@ -90,15 +90,13 @@ async def chat_query_stream(
         logger.info("chat_stream_query", extra={"user_id": user_id, "question_len": len(request.question)})
 
         from app.services.rag_service import (
-            _fetch_latest_docs_sync,
+            hybrid_retrieve,
             _generate_answer_stream_chunks,
             _build_sources,
         )
-        from fastapi.concurrency import run_in_threadpool
 
-        # 直接从 DB 取最新 8 份文书，无需向量嵌入，更快更准
-        context_items = await run_in_threadpool(
-            _fetch_latest_docs_sync, db, user_id or 0, 8
+        context_items = await hybrid_retrieve(
+            request.question, db, user_id or 0,
         )
         sources = _build_sources(context_items)
 
@@ -175,41 +173,60 @@ async def kb_status(
     db: Session = Depends(get_db),
 ):
     try:
-        n_eligible = (
-            db.query(OcrResult)
+        from sqlalchemy import func
+        n_images = (
+            db.query(func.count(func.distinct(OcrResult.image_id)))
             .join(Image, OcrResult.image_id == Image.id)
             .filter(
                 OcrResult.status == OcrStatus.DONE,
                 Image.user_id == user_id,
                 OcrResult.raw_text.isnot(None),
             )
-            .count()
-        )
-        return {"success": True, "data": {"indexed_count": n_eligible}}
+            .scalar()
+        ) or 0
+        return {"success": True, "data": {"indexed_count": n_images}}
     except Exception:
         return {"success": True, "data": {"indexed_count": 0}}
 
 
 def _reindex_all_sync(user_id: int):
     """
-    遍历当前用户所有 OCR 完成的文档，将其写入 ChromaDB（upsert）。
-    只索引属于 user_id 的图片，并将 user_id 写入 metadata 实现资料库隔离。
+    遍历当前用户所有图片，每张图片只索引最新一条 OCR 结果，写入 ChromaDB（upsert）。
+    doc_id = image_{image_id}，确保每张图片在向量库中只有一条记录。
     在后台任务中运行，创建独立的 DB session 避免使用已关闭的请求级 session。
     """
     from app.services.rag_service import _get_text_embeddings_sync
     from app.services.vector_store.chroma import upsert_document
     from database import Image, SessionLocal
+    from sqlalchemy import func
+    import json as _json_inner
 
     db = SessionLocal()
     try:
+        _EMPTY = {"未识别", "未记载", "None", "null", ""}
+
+        latest_ocr_subq = (
+            db.query(
+                OcrResult.image_id,
+                func.max(OcrResult.id).label("max_ocr_id"),
+            )
+            .join(Image, OcrResult.image_id == Image.id)
+            .filter(
+                OcrResult.status == OcrStatus.DONE,
+                Image.user_id == user_id,
+                OcrResult.raw_text.isnot(None),
+            )
+            .group_by(OcrResult.image_id)
+            .subquery()
+        )
+
         ocr_results = (
             db.query(OcrResult)
-            .join(Image, OcrResult.image_id == Image.id)
-            .filter(OcrResult.status == OcrStatus.DONE, Image.user_id == user_id)
+            .join(latest_ocr_subq, OcrResult.id == latest_ocr_subq.c.max_ocr_id)
             .all()
         )
+
         indexed, skipped = 0, 0
-        _EMPTY = {"未识别", "未记载", "None", "null", ""}
 
         for ocr in ocr_results:
             if not ocr.raw_text:
@@ -226,10 +243,11 @@ def _reindex_all_sync(user_id: int):
                     .first()
                 )
 
+                image_id = ocr.image_id
                 metadata: dict = {
                     "user_id": user_id,
                     "ocr_result_id": ocr.id,
-                    "image_id": ocr.image_id,
+                    "image_id": image_id,
                     "filename": ocr.image.filename if ocr.image else "",
                     "structured_result_id": "",
                     "time": "", "location": "", "seller": "",
@@ -238,7 +256,6 @@ def _reindex_all_sync(user_id: int):
                 rich_text = ocr.raw_text
 
                 if struct and struct.content:
-                    import json as _json_inner
                     try:
                         sd = _json_inner.loads(struct.content)
                     except Exception:
@@ -259,19 +276,19 @@ def _reindex_all_sync(user_id: int):
                             ("time", "location", "seller", "buyer", "price", "subject")
                             if metadata[k]]
                     if tags:
-                        tag_str = "　".join(f"【{label_map[k]}】{v}" for k, v in tags)
+                        tag_str = "　".join(f"【{_LABEL_MAP[k]}】{v}" for k, v in tags)
                         rich_text = ocr.raw_text + "\n" + tag_str
 
                 embedding = _get_text_embeddings_sync(rich_text)
                 upsert_document(
-                    doc_id=f"ocr_{ocr.id}",
+                    doc_id=f"image_{image_id}",
                     text=rich_text,
                     embedding=embedding,
                     metadata=metadata,
                 )
                 indexed += 1
             except Exception as e:
-                logger.warning("reindex_doc_failed", extra={"ocr_id": ocr.id, "error": str(e)})
+                logger.warning("reindex_doc_failed", extra={"image_id": ocr.image_id, "error": str(e)})
                 skipped += 1
 
         return {"total": len(ocr_results), "indexed": indexed, "skipped": skipped}
@@ -279,7 +296,7 @@ def _reindex_all_sync(user_id: int):
         db.close()
 
 
-label_map = {
+_LABEL_MAP = {
     "time": "时间", "location": "地点", "seller": "卖方",
     "buyer": "买方", "price": "价格", "subject": "标的",
 }

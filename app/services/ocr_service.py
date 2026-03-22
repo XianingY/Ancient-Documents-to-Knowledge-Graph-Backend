@@ -285,29 +285,35 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
 def _index_ocr_to_chroma(ocr_result_id: int, text: str, image) -> None:
     """
     将 OCR 文本写入 ChromaDB 向量索引（基础版，无结构化元数据）。
-    doc_id = ocr_{ocr_result_id}，后续结构化完成后会覆盖更新。
+    doc_id = image_{image_id}，保证每张图片在向量库中只有一条记录，
+    重新 OCR 时 upsert 会自动覆盖旧结果。
     """
+    if not image:
+        return
     try:
         from app.services.rag_service import _get_text_embeddings_sync
         from app.services.vector_store.chroma import upsert_document
         embedding = _get_text_embeddings_sync(text)
         metadata = {
-            "user_id": image.user_id if image else 0,
+            "user_id": image.user_id,
             "ocr_result_id": ocr_result_id,
-            "image_id": image.id if image else 0,
-            "filename": image.filename if image else "",
-            # 结构化字段留空，等结构化分析完成后更新
+            "image_id": image.id,
+            "filename": image.filename or "",
             "structured_result_id": "",
             "time": "",
             "location": "",
+            "seller": "",
+            "buyer": "",
+            "price": "",
+            "subject": "",
         }
         upsert_document(
-            doc_id=f"ocr_{ocr_result_id}",
+            doc_id=f"image_{image.id}",
             text=text,
             embedding=embedding,
             metadata=metadata,
         )
-        print(f"OCR result {ocr_result_id} indexed to ChromaDB (basic).")
+        print(f"Image {image.id} OCR indexed to ChromaDB (doc_id=image_{image.id}).")
     except Exception as e:
         print(f"ChromaDB OCR indexing failed (non-fatal): {e}")
 

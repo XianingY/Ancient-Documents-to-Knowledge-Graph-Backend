@@ -70,7 +70,7 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
         print(f"Structured analysis for {ocr_result_id} completed.")
 
         # ④ 用富文本覆盖 ChromaDB 向量索引
-        # doc_id 与 OCR 阶段一致（ocr_{id}），upsert 覆盖基础版，补充结构化元数据
+        # doc_id = image_{image_id}，与 OCR 阶段一致，upsert 覆盖基础版，补充结构化元数据
         # 富文本 = OCR 原文 + 结构化字段摘要，使"找买方是张三的契约"等语义查询更准确
         try:
             from app.services.rag_service import _get_text_embeddings_sync
@@ -97,12 +97,13 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
                 parts.append("\n" + "　".join(filled))
             rich_text = "\n".join(parts)
 
+            image_id = ocr_result.image_id
             embedding = _get_text_embeddings_sync(rich_text)
             metadata = {
                 "user_id": ocr_result.image.user_id if ocr_result.image else 0,
                 "structured_result_id": structured_result.id,
                 "ocr_result_id": ocr_result.id,
-                "image_id": ocr_result.image_id,
+                "image_id": image_id,
                 "filename": structured_data.get("filename", ""),
                 "time": _field("Time"),
                 "location": _field("Location"),
@@ -112,12 +113,12 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
                 "subject": _field("Subject"),
             }
             upsert_document(
-                doc_id=f"ocr_{ocr_result.id}",
+                doc_id=f"image_{image_id}",
                 text=rich_text,
                 embedding=embedding,
                 metadata=metadata,
             )
-            print(f"Document ocr_{ocr_result.id} re-indexed with structured enrichment.")
+            print(f"Image {image_id} re-indexed with structured enrichment (doc_id=image_{image_id}).")
         except Exception as idx_err:
             print(f"ChromaDB enrichment indexing failed (non-fatal): {idx_err}")
 
