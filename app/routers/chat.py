@@ -43,18 +43,18 @@ class ChatQueryRequest(BaseModel):
 )
 @rate_limit("30/minute")
 async def chat_query(
-    _req: Request,
-    request: ChatQueryRequest,
+    request: Request,
+    body: ChatQueryRequest,
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     try:
         history = (
-            [{"role": h.role, "content": h.content} for h in request.history]
-            if request.history else None
+            [{"role": h.role, "content": h.content} for h in body.history]
+            if body.history else None
         )
-        logger.info("chat_query", extra={"user_id": user_id, "question_len": len(request.question)})
-        result = await rag_pipeline(request.question, db, history, user_id=user_id)
+        logger.info("chat_query", extra={"user_id": user_id, "question_len": len(body.question)})
+        result = await rag_pipeline(body.question, db, history, user_id=user_id)
         return {"success": True, "data": result}
     except HTTPException:
         raise

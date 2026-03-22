@@ -38,15 +38,15 @@ class LoginRequest(BaseModel):
 
 @router.post("/register", summary="用户注册", description="创建新用户账号，用户名唯一，邮箱可选")
 @rate_limit("10/minute")
-async def register(request: RegisterRequest, _req: Request, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == request.username).first()
+async def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.username == payload.username).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="用户名已存在")
 
-    hashed_password = hash_password(request.password)
+    hashed_password = hash_password(payload.password)
     db_user = User(
-        username=request.username,
-        email=request.email,
+        username=payload.username,
+        email=payload.email,
         password_hash=hashed_password,
         created_at=get_beijing_time(),
     )
@@ -67,10 +67,10 @@ async def register(request: RegisterRequest, _req: Request, db: Session = Depend
 
 @router.post("/login", summary="用户登录", description="验证用户名和密码，成功后返回 JWT Bearer Token，有效期24小时")
 @rate_limit("20/minute")
-async def login(request: LoginRequest, _req: Request, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == request.username).first()
-    if not db_user or not verify_password(request.password, db_user.password_hash):
-        logger.warning("login_failed", extra={"username": request.username})
+async def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == payload.username).first()
+    if not db_user or not verify_password(payload.password, db_user.password_hash):
+        logger.warning("login_failed", extra={"username": payload.username})
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)

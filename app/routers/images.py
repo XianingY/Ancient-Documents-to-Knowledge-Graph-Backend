@@ -72,7 +72,7 @@ def _ensure_thumbnail(image_path: str, thumbnail_path: str) -> None:
 @router.post("/upload", summary="上传地契图片", description="支持 JPG/PNG/WEBP/GIF/BMP/TIFF 格式，最大 10MB。上传后自动触发 OCR → 结构化分析 → 知识图谱生成流水线")
 @rate_limit("30/minute")
 async def upload_image(
-    _req: Request,
+    request: Request,
     image: UploadFile = File(...),
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
