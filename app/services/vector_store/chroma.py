@@ -7,6 +7,9 @@ ChromaDB 向量存储封装（含元数据支持）
 import os
 from typing import Any
 
+# 必须在 import chromadb 之前（见 pydantic_chroma_shim 说明）
+import app.services.vector_store.pydantic_chroma_shim  # noqa: F401
+
 import chromadb
 from app.core.config import settings
 
