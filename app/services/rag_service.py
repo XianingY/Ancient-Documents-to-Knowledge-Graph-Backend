@@ -1,11 +1,13 @@
 """
-RAG 问答服务（含引用溯源、多轮对话、流式输出）
+问答服务（含引用溯源、多轮对话、流式输出）。
 
-流程（v3 - 直取最新 N 条，无需向量检索）：
-  1. 从数据库直接获取当前用户最新 top_n 份已处理文书作为上下文
-  2. 构建简洁 Prompt，拼入对话历史
-  3. DashScope Qwen-Turbo 生成回答（支持流式/非流式）
+主流程与 `rag_pipeline` / `_fetch_latest_docs_sync` 一致（默认 top_n=8）：
+  1. 从数据库按图片上传时间倒序取当前用户最新若干条 OCR 已完成且有正文的文书（可选并入最新 StructuredResult 字段）
+  2. 构建 Prompt；history 最多最近 6 轮（`_build_messages`）
+  3. DashScope qwen-turbo 生成回答（流式/非流式）
   4. 返回 answer + sources
+
+`retrieve_context`（Chroma 向量检索）保留供扩展，主路径不调用。
 """
 import json
 import os
@@ -309,7 +311,7 @@ def _build_sources(context_items: list) -> list:
     return sources
 
 
-# ── RAG 主流程 ────────────────────────────────────────────────
+# ── 问答主流程 ────────────────────────────────────────────────
 
 async def rag_pipeline(
     question: str,
@@ -318,7 +320,7 @@ async def rag_pipeline(
     user_id: int | None = None,
 ) -> dict:
     """
-    RAG 主流程：直接从 DB 取最新 8 份文书作为上下文，无需向量检索。
+    从 DB 取最新 8 份文书作为上下文（_fetch_latest_docs_sync），无向量检索。
     """
     try:
         context_items = await run_in_threadpool(

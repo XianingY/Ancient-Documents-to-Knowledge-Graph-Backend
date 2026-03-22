@@ -1,4 +1,4 @@
-"""RAG 智能问答路由"""
+"""智能问答路由（DB 上下文 + qwen-turbo；见 rag_service）"""
 import asyncio
 import json as _json
 import traceback
@@ -35,10 +35,11 @@ class ChatQueryRequest(BaseModel):
 
 @router.post(
     "/query",
-    summary="RAG 智能问答（非流式）",
+    summary="智能问答（非流式）",
     description=(
-        "基于知识库进行向量检索增强生成（RAG）问答，一次性返回完整回答。"
-        "支持多轮对话（传入 history）和引用溯源（返回 sources）。"
+        "从数据库按上传时间取当前用户最近 8 条已完成 OCR 的文书拼上下文，"
+        "调用 qwen-turbo 生成回答；非 Chroma 向量检索。"
+        "支持多轮 history（服务端最多取最近 6 轮）与 sources 引用溯源。"
     ),
 )
 @rate_limit("30/minute")
@@ -66,9 +67,9 @@ async def chat_query(
 
 @router.post(
     "/query-stream",
-    summary="RAG 流式智能问答（SSE）",
+    summary="智能问答（SSE 流式）",
     description=(
-        "与 /query 功能相同，但通过 Server-Sent Events 流式推送回答。\n\n"
+        "与 /query 相同的上下文构建与模型，通过 Server-Sent Events 流式推送回答。\n\n"
         "事件格式（每条以 `data: ` 开头，两个换行结束）：\n"
         "- `{\"type\": \"sources\", \"sources\": [...]}` — 先发送引用来源\n"
         "- `{\"type\": \"text\", \"delta\": \"...\"}` — 逐块推送答案增量\n"

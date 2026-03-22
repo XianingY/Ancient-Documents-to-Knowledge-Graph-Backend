@@ -90,4 +90,4 @@ pytest api_test/test_api.py -v -s
 
 ## 说明：`POST /api/v1/images/upload`
 
-该路由在 `app/routers/images.py` 中**仅**写入磁盘与 `Image` 表，**不会**调用 `task_ocr_image.delay`。OCR 需客户端再请求 `POST /api/v1/images/{image_id}/ocr`。OpenAPI 上的「自动流水线」描述与当前实现不一致时，以代码为准。
+该路由在 `app/routers/images.py` 中在落库成功后调用 **`task_ocr_image.delay(image_id)`**；若 Celery 投递失败则仅记录警告，上传仍成功。**结构化**与**单文书关系图**不会由此路由自动触发，需 `POST /api/v1/structured-results`、`POST /api/v1/relation-graphs`（或 App 内操作）。OpenAPI 文案应与上述行为一致。

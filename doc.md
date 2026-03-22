@@ -264,7 +264,9 @@ Authorization: Bearer {access_token}
 ### POST /api/v1/images/upload
 上传图片文件。
 
-**当前实现**（`app/routers/images.py`）：仅保存文件并写入 `Image` 表，**不会**在此路由内调用 Celery 或触发 OCR。OCR 需再调用 `POST /api/v1/images/{image_id}/ocr`；结构化、关系图需分别调用对应接口。
+**当前实现**（`app/routers/images.py`）：保存文件并写入 `Image` 表后，调用 **`task_ocr_image.delay(db_image.id)`** 将 OCR 提交到 Celery。若队列不可用（如未启 Worker/Redis），异常被捕获并记录日志，**上传仍返回成功**，此时需客户端再调 `POST /api/v1/images/{image_id}/ocr` 补投。**结构化**与**单文书关系图**不在本路由内触发，须分别调用 `POST /api/v1/structured-results`、`POST /api/v1/relation-graphs`（或由 App 内按钮触发）。
+
+校验失败时多为 **HTTP 400/413/500**（如类型不支持、文件过大、为空、保存失败等），与早期「一律 200」的表述可能不一致，以路由实现为准。
 
 **请求头**
 ```
@@ -293,21 +295,10 @@ Content-Type: multipart/form-data
 }
 ```
 
-**失败响应** (200)
-```json
-{
-  "success": false,
-  "message": "文件为空"
-}
-```
-
-失败响应同样使用 200，`message` 可能为：
-- 不支持的文件类型
-- 文件过大
-- 文件为空
-- 读取文件失败
-- 保存文件失败
-- 保存到数据库失败
+**错误响应**（常见）
+- `400`：`detail` 如不支持的扩展名、文件为空、读取失败等
+- `413`：超过 `MAX_FILE_SIZE`（默认 10MB）
+- `500`：保存磁盘或数据库失败
 
 ---
 
@@ -888,7 +879,7 @@ Authorization: Bearer {access_token}
 
 **算法说明**（与 `app/services/analysis_components/entity_resolver.py` 一致，细节以源码为准）
 
-- **姓名**：字符相似与 DashScope 文本向量融合后，再与时间（`Time_AD` 接近度）、地点（相同/包含/前缀）加权；综合分超过阈值则合并为同一实体。
+- **姓名**：单层融合为 **0.4×字符相似度 + 0.6×语义相似度**（语义为 `text-embedding-v1` 余弦，缺向量时回退字符层）；`calculate_similarity` 中 **0.6×姓名分 + 时间阶梯加分 + 地点匹配加分**；**阈值 0.45** 合并为同一实体。
 - **图谱**：在 NetworkX 上构建跨文书关系，含买卖、见证、地块流转等边类型，并导出 ECharts 力导向数据。
 
 ---
@@ -923,7 +914,9 @@ Authorization: Bearer {access_token}
 ## 智能问答路由 (前缀: /api/v1/chat)
 
 ### POST /api/v1/chat/query
-智能问答。上下文由 `rag_service` **从数据库拉取当前用户最近若干条已完成 OCR 的文书**拼成（非 Chroma 向量检索主路径）；生成模型为 DashScope **qwen-turbo**。支持可选多轮 `history`。
+智能问答。上下文由 `rag_service._fetch_latest_docs_sync` **按图片上传时间倒序**取当前用户 **最近 8 条** `OcrResult.status == done` 且 `raw_text` 非空的记录；每条若存在最新一条已完成的 `StructuredResult`，则把 Time/Location/Seller/Buyer/Price/Subject 等写入元数据，原文参与 `_format_context`（每条正文节选最多约 250 字）。**不使用** Chroma 向量检索。生成模型为 DashScope **qwen-turbo**。可选多轮 `history` 在系统 Prompt 中**最多纳入最近 6 轮**（`rag_service._build_messages`）。
+
+> OpenAPI 摘要若写「向量检索 RAG」与上述实现不一致时，以本段及 `rag_service.py` 为准。
 
 **请求头**
 ```
@@ -963,7 +956,7 @@ Authorization: Bearer {access_token}
 }
 ```
 
-另支持流式：`POST /api/v1/chat/query-stream`（SSE）。知识库索引状态：`GET /api/v1/chat/kb-status`；重建索引：`POST /api/v1/chat/reindex`。
+另支持流式：`POST /api/v1/chat/query-stream`（SSE），上下文构建与 `/query` 相同。`GET /api/v1/chat/kb-status` 返回的是 **数据库** 中符合「OCR 完成且有正文」的文书数量（与问答候选一致），**不是** Chroma 向量条数。`POST /api/v1/chat/reindex` 在后台把用户文书写入/更新 Chroma（`BackgroundTasks` + `_reindex_all_sync`）。
 
 ---
 
@@ -1006,8 +999,8 @@ POST /api/v1/auth/login     -> 登录，获得 access_token
 
 #### 2. 图片处理流程
 ```
-POST /api/v1/images/upload                 -> 上传图片，获得 imageId（仅落库，不自动 OCR）
-POST /api/v1/images/{imageId}/ocr          -> 触发 OCR（Celery）
+POST /api/v1/images/upload                 -> 上传并落库，并尝试 Celery 自动 OCR（失败则需手动 ocr）
+POST /api/v1/images/{imageId}/ocr          -> 手动/重试 OCR（Celery）
 GET  /api/v1/images/{imageId}/ocr-results  -> 获取 OCR 结果 ID 列表
 GET  /api/v1/ocr-results/{ocrId}           -> 获取单个 OCR 详情
 ```
@@ -1022,9 +1015,9 @@ GET  /api/v1/relation-graphs/{relationGraphId}      -> 获取关系图详情
 
 #### 4. 跨文档分析流程
 ```
-POST /api/v1/multi-tasks                            -> 创建跨文档任务（直接提供结构化结果ID）
-POST /api/v1/multi-tasks/from-images                -> 根据图片ID自动创建跨文档任务
-POST /api/v1/multi-relation-graphs                  -> 创建跨文档分析任务
+POST /api/v1/multi-tasks                            -> 创建跨文档任务（直接提供结构化结果ID）；创建后 BackgroundTasks 调 analyze_multi_task
+POST /api/v1/multi-tasks/from-images                -> 按图片 ID 解析最新结构化结果并创建任务；同上自动 analyze_multi_task
+POST /api/v1/multi-relation-graphs                  -> 可选：仅通过 Celery task_analyze_multi_task 生成跨文档图谱
 GET  /api/v1/multi-relation-graphs/{multiGraphId}   -> 获取跨文档分析结果
 ```
 

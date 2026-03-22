@@ -69,7 +69,15 @@ def _ensure_thumbnail(image_path: str, thumbnail_path: str) -> None:
         raise HTTPException(status_code=500, detail="生成缩略图失败")
 
 
-@router.post("/upload", summary="上传地契图片", description="支持 JPG/PNG/WEBP/GIF/BMP/TIFF 格式，最大 10MB。上传后自动触发 OCR → 结构化分析 → 知识图谱生成流水线")
+@router.post(
+    "/upload",
+    summary="上传地契图片",
+    description=(
+        "支持 JPG/PNG/WEBP/GIF/BMP/TIFF 格式，最大 10MB。"
+        "落库后尝试 Celery 投递 OCR（task_ocr_image）；队列失败不阻断上传。"
+        "结构化与单文书关系图需另行调用对应 API 或 App 内按钮。"
+    ),
+)
 @rate_limit("30/minute")
 async def upload_image(
     request: Request,
