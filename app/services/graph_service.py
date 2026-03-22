@@ -241,16 +241,30 @@ async def analyze_structured_result(structured_result_id: int, db: Session) -> N
         print(f"Invalid JSON in StructuredResult {structured_result_id}")
         return
 
-    # ① 立即写入 PROCESSING 状态
-    relation_graph = RelationGraph(
-        structured_result_id=structured_result_id,
-        content=json.dumps({}),
-        status=OcrStatus.PROCESSING,
-        created_at=get_beijing_time(),
+    # ① 复用已有记录或新建（避免同一结构化结果多次刷新产生多条记录）
+    existing = (
+        db.query(RelationGraph)
+        .filter(RelationGraph.structured_result_id == structured_result_id)
+        .order_by(RelationGraph.id.desc())
+        .first()
     )
-    db.add(relation_graph)
-    db.commit()
-    db.refresh(relation_graph)
+    if existing:
+        relation_graph = existing
+        relation_graph.content = json.dumps({})
+        relation_graph.status = OcrStatus.PROCESSING
+        relation_graph.created_at = get_beijing_time()
+        db.commit()
+        db.refresh(relation_graph)
+    else:
+        relation_graph = RelationGraph(
+            structured_result_id=structured_result_id,
+            content=json.dumps({}),
+            status=OcrStatus.PROCESSING,
+            created_at=get_beijing_time(),
+        )
+        db.add(relation_graph)
+        db.commit()
+        db.refresh(relation_graph)
 
     try:
         # ② 构建关系图
