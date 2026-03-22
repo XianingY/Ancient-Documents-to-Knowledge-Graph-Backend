@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import Image, OcrResult, OcrStatus, StructuredResult, User, get_db
@@ -17,13 +18,24 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/statistics", tags=["数据统计"])
 
 
-def _parse_structured_results(db: Session, user_id: int) -> List[Dict[str, Any]]:
-    """查询当前用户所有已完成的结构化结果并解析 JSON"""
-    rows = (
-        db.query(StructuredResult.content)
+def _latest_structured_result_ids(db: Session, user_id: int):
+    """返回每张图片最新一条已完成的 StructuredResult 的 id 列表（子查询）"""
+    return (
+        db.query(func.max(StructuredResult.id).label("max_id"))
         .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
         .join(Image, OcrResult.image_id == Image.id)
         .filter(Image.user_id == user_id, StructuredResult.status == OcrStatus.DONE)
+        .group_by(Image.id)
+        .subquery()
+    )
+
+
+def _parse_structured_results(db: Session, user_id: int) -> List[Dict[str, Any]]:
+    """查询当前用户每张图片最新的结构化结果并解析 JSON"""
+    latest_ids = _latest_structured_result_ids(db, user_id)
+    rows = (
+        db.query(StructuredResult.content)
+        .filter(StructuredResult.id.in_(db.query(latest_ids.c.max_id)))
         .all()
     )
     results = []
@@ -48,12 +60,14 @@ async def get_statistics(
 
     # 文书总数
     total_images = db.query(Image).filter(Image.user_id == user_id).count()
+
+    # 已分析图片数（每张图片只计一次）
     total_done = (
-        db.query(StructuredResult)
-        .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
-        .join(Image, OcrResult.image_id == Image.id)
+        db.query(func.count(func.distinct(Image.id)))
+        .join(OcrResult, OcrResult.image_id == Image.id)
+        .join(StructuredResult, StructuredResult.ocr_result_id == OcrResult.id)
         .filter(Image.user_id == user_id, StructuredResult.status == OcrStatus.DONE)
-        .count()
+        .scalar()
     )
 
     parsed = _parse_structured_results(db, user_id)
