@@ -12,7 +12,7 @@ from app.services.analysis_service import (
     analyze_structured_result_sync,
     analyze_multi_task_sync,
 )
-from database import SessionLocal
+from database import OcrResult, OcrStatus, SessionLocal, StructuredResult
 
 logger = get_logger(__name__)
 
@@ -30,8 +30,22 @@ def task_ocr_image(self, image_id: int):
     logger.info("task_ocr_started", extra={"image_id": image_id, "attempt": self.request.retries + 1})
     db = SessionLocal()
     try:
-        ocr_image_by_id(image_id, db)
+        ok = ocr_image_by_id(image_id, db)
+        if not ok:
+            logger.warning("task_ocr_no_chain", extra={"image_id": image_id})
+            return
         logger.info("task_ocr_done", extra={"image_id": image_id})
+        # 上传/OCR 成功后自动排队结构化分析（与 App「记录」里识别结果自动出现一致）
+        latest = (
+            db.query(OcrResult)
+            .filter(OcrResult.image_id == image_id, OcrResult.status == OcrStatus.DONE)
+            .order_by(OcrResult.id.desc())
+            .first()
+        )
+        text = (latest.raw_text or "").strip() if latest else ""
+        if text and not text.startswith("Error:"):
+            task_analyze_ocr_result.delay(latest.id)
+            logger.info("task_analyze_queued_after_ocr", extra={"ocr_result_id": latest.id})
     except Exception as exc:
         logger.error(
             "task_ocr_failed",
@@ -53,6 +67,15 @@ def task_analyze_ocr_result(self, ocr_result_id: int):
     try:
         analyze_ocr_result_sync(ocr_result_id, db)
         logger.info("task_analyze_done", extra={"ocr_result_id": ocr_result_id})
+        sr = (
+            db.query(StructuredResult)
+            .filter(StructuredResult.ocr_result_id == ocr_result_id)
+            .order_by(StructuredResult.id.desc())
+            .first()
+        )
+        if sr and sr.status == OcrStatus.DONE:
+            task_analyze_structured_result.delay(sr.id)
+            logger.info("task_graph_queued_after_structured", extra={"structured_result_id": sr.id})
     except Exception as exc:
         logger.error(
             "task_analyze_failed",
