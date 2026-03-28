@@ -9,19 +9,26 @@ from sqlalchemy import create_engine, Integer, String, DateTime, ForeignKey, Enu
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, mapped_column, Mapped
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from app.core.config import settings
 
 # 数据库路径
 DB_DIR = "database"
 DB_NAME = "app.db"
 DB_PATH = os.path.join(DB_DIR, DB_NAME)
-DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-# 创建数据库目录
-if not os.path.exists(DB_DIR):
-    os.makedirs(DB_DIR)
+if settings.DATABASE_URL:
+    DATABASE_URL = settings.DATABASE_URL
+else:
+    DATABASE_URL = f"sqlite:///{DB_PATH}"
+
+# 创建数据库目录 (仅当使用本地 SQLite 时)
+if DATABASE_URL.startswith("sqlite:///") and DB_PATH in DATABASE_URL:
+    if not os.path.exists(DB_DIR):
+        os.makedirs(DB_DIR)
 
 # 创建SQLAlchemy引擎和会话
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -32,6 +39,8 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON;")
         cursor.close()
+    elif DATABASE_URL.startswith("mysql") or DATABASE_URL.startswith("postgresql"):
+        pass # MySQL and PostgreSQL enforce foreign keys natively by default when set up correctly.
 
 # 获取北京时间（UTC+8）
 def get_beijing_time():

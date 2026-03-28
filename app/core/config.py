@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # AI Services
     DASHSCOPE_API_KEY: Optional[str] = None
 
+    # Database (Optional, fallback to SQLite if not provided)
+    DATABASE_URL: Optional[str] = None
+
     # Redis & Celery
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
