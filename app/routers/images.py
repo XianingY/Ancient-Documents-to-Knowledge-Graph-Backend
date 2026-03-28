@@ -74,8 +74,8 @@ def _ensure_thumbnail(image_path: str, thumbnail_path: str) -> None:
     summary="上传地契图片",
     description=(
         "支持 JPG/PNG/WEBP/GIF/BMP/TIFF 格式，最大 10MB。"
-        "落库后尝试 Celery 投递 OCR（task_ocr_image）；队列失败不阻断上传。"
-        "结构化与单文书关系图需另行调用对应 API 或 App 内按钮。"
+        "落库后 Celery 投递 OCR；成功后自动排队结构化分析与单文书关系图（需 Worker + API Key）。"
+        "队列失败不阻断上传；亦可手动 POST /ocr 或 App 内刷新重试。"
     ),
 )
 @rate_limit("30/minute")

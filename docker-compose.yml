@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ancient_doc_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  backend:
+    build: .
+    container_name: ancient_doc_backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./database:/app/database
+      - ./pic:/app/pic
+      - ./.env:/app/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SERVER_PORT=3000
+    depends_on:
+      - redis
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 3000
+
+  celery_worker:
+    build: .
+    container_name: ancient_doc_celery_worker
+    volumes:
+      - ./database:/app/database
+      - ./pic:/app/pic
+      - ./.env:/app/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+      - backend
+    restart: unless-stopped
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+
+volumes:
+  redis_data:

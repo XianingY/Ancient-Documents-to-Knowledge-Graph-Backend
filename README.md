@@ -4,6 +4,20 @@ Python **3.11+**，框架 **FastAPI**，数据库 **SQLite**（`database/app.db`
 
 ## 安装依赖
 
+### 方式一：Docker 容器化部署（推荐）
+
+本项目已全面支持 Docker 部署，一键启动后端与 Redis 服务：
+
+```bash
+# 确保已安装 Docker 和 Docker Compose
+# 在项目根目录下执行：
+docker-compose up -d
+```
+
+启动后，可通过 `docker-compose logs -f` 查看运行日志。
+
+### 方式二：本地环境安装
+
 ```bash
 pip install -r requirements.txt
 ```

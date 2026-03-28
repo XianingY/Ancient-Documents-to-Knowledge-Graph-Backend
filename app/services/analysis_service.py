@@ -432,6 +432,12 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
                     "symbolSize": size,
                     "symbol": symbol,
                     "value": tooltip_text,
+                    "properties": {
+                        "类型": "地块" if is_land else "人物",
+                        "角色": roles_zh if not is_land else None,
+                        "涉及文书数": f"{doc_cnt} 份" if not is_land else None,
+                        "交易次数": f"{doc_cnt} 次" if is_land else None,
+                    },
                     "label": {
                         "show": True,
                         "formatter": display_name,
