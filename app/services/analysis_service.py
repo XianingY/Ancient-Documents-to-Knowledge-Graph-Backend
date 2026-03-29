@@ -730,7 +730,7 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
                     "target": v,
                     "value": lbl,
                     "label": {
-                        "show": True,
+                        "show": False,  # 默认隐藏边标签，避免文字过多显得杂乱
                         "formatter": lbl,
                         "fontSize": 10,
                         "fontWeight": "bold",
@@ -774,6 +774,7 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
                         "edgeSymbol": ["none", "arrow"],
                         "edgeSymbolSize": [0, 8],
                         "label": {"position": "bottom", "formatter": "{b}"},
+                        "labelLayout": {"hideOverlap": True},
                         "force": {
                             "repulsion": repulsion,
                             "edgeLength": [80, edge_max],
