@@ -160,7 +160,7 @@ async def call_structure_llm(text: str) -> Dict[str, Any]:
 # ── 历史洞察生成 ─────────────────────────────────────────────
 
 def _build_insights_prompt(statistics: Dict[str, Any], parsed_datas: List[Dict]) -> str:
-    """根据统计数据构造 LLM 分析提示词"""
+    """根据统计数据构造 LLM 多维分析提示词"""
     doc_count = statistics.get("doc_count", 0)
     time_range = statistics.get("time_range", {})
     unique_people = statistics.get("unique_people", 0)
@@ -168,52 +168,139 @@ def _build_insights_prompt(statistics: Dict[str, Any], parsed_datas: List[Dict])
     top_people = statistics.get("top_people", [])
     top_locations = statistics.get("top_locations", [])
     land_chain_count = statistics.get("land_chain_count", 0)
+    land_chains = statistics.get("land_chains", [])
+    clan_groups = statistics.get("clan_groups", [])
+    witness_network = statistics.get("witness_network", [])
+    network_metrics = statistics.get("network_metrics", {})
+    price_trend = statistics.get("price_trend", [])
+    avg_price = statistics.get("avg_price")
+    decade_distribution = statistics.get("decade_distribution", [])
 
     time_str = (
         f"公元 {time_range['start']} 年 — {time_range['end']} 年（跨度 {time_range.get('span', 0)} 年）"
         if time_range.get("start") and time_range.get("end")
         else "时间信息不完整"
     )
+
+    _EMPTY = {"未识别", "未知", "", "未记载", "None", "none"}
     summaries = []
-    for d in parsed_datas[:8]:
+    for d in parsed_datas[:12]:
         seller = d.get("Seller", "")
         buyer = d.get("Buyer", "")
-        if seller and buyer and all(v not in ["未识别", "未知", ""] for v in [seller, buyer]):
+        if seller and buyer and all(v not in _EMPTY for v in [seller, buyer]):
             loc = d.get("Location", "")
             price = d.get("Price", "")
+            subject = d.get("Subject", "")
             t = d.get("Time", "")
-            parts = [f"{t}：" if t and t not in ["未识别", ""] else ""]
+            parts = [f"{t}：" if t and t not in _EMPTY else ""]
             parts.append(f"{seller} → {buyer}")
-            if loc and loc not in ["未识别", ""]:
+            if loc and loc not in _EMPTY:
                 parts.append(f"，地点：{loc}")
-            if price and price not in ["未识别", ""]:
+            if subject and subject not in _EMPTY:
+                parts.append(f"，标的：{subject}")
+            if price and price not in _EMPTY:
                 parts.append(f"，价格：{price}")
             summaries.append("  - " + "".join(parts))
 
     cross_str = "、".join(cross_role[:5]) if cross_role else "无"
     top_people_str = (
-        "、".join([f"{p['name']}（涉及 {p['doc_count']} 份文书）" for p in top_people[:3]])
+        "、".join([f"{p['name']}（{p['doc_count']}份·{'、'.join(p.get('roles', []))}）" for p in top_people[:5]])
         if top_people else "数据不足"
     )
-    locations_str = "、".join([l["name"] for l in top_locations[:4]]) if top_locations else "未提取到"
+    locations_str = "、".join([f"{l['name']}({l['count']}次)" for l in top_locations[:5]]) if top_locations else "未提取到"
     tx_block = "\n".join(summaries) if summaries else "  （未能提取有效交易摘要）"
 
-    return f"""你是专业的历史文书研究专家，擅长分析中国古代地契的社会关系与经济史意义。
-请根据以下跨文档分析结果，用150-250字撰写一段专业的历史学分析摘要。
+    # 家族/宗族信息
+    clan_str = ""
+    if clan_groups:
+        clan_parts = [f"{c['surname']}姓{c['count']}人（{'、'.join(c['members'][:4])}）" for c in clan_groups[:3]]
+        clan_str = "、".join(clan_parts)
+    else:
+        clan_str = "未发现明显宗族聚集"
 
-【分析数据】
+    # 见证人网络
+    witness_str = ""
+    if witness_network:
+        w_parts = [f"{w['name']}（见证{w['witness_count']}次）" for w in witness_network[:3]]
+        witness_str = "、".join(w_parts)
+    else:
+        witness_str = "数据不足"
+
+    # 地产流转链详情
+    chain_details = []
+    for chain in land_chains[:3]:
+        transfers = chain.get("transfers", [])
+        if transfers:
+            t_strs = [f"{t.get('from', '?')}→{t.get('to', '?')}" + (f"({t['time']})" if t.get('time') else "") for t in transfers[:4]]
+            chain_details.append(f"  · {chain['location']}：{'，'.join(t_strs)}")
+    chain_block = "\n".join(chain_details) if chain_details else "  （无详细流转记录）"
+
+    # 社会网络指标
+    net_info = ""
+    if network_metrics:
+        bridge_str = "、".join([f"{b['name']}" for b in network_metrics.get("bridge_people", [])]) or "无"
+        net_info = f"网络密度 {network_metrics.get('density', 0):.3f}，桥接关键人物：{bridge_str}"
+    else:
+        net_info = "尚未计算"
+
+    # 价格信息
+    price_info = ""
+    if price_trend:
+        price_info = f"可识别价格的交易 {len(price_trend)} 笔"
+        if avg_price:
+            price_info += f"，均价约 {avg_price} 两"
+        if len(price_trend) >= 2:
+            earliest = price_trend[0]
+            latest = price_trend[-1]
+            if earliest.get("year") and latest.get("year"):
+                price_info += f"（{earliest['year']}年 {earliest['raw']} → {latest['year']}年 {latest['raw']}）"
+    else:
+        price_info = "价格数据不足"
+
+    # 时间分布
+    decade_str = ""
+    if decade_distribution:
+        decade_str = "、".join([f"{d['decade']}({d['count']}份)" for d in decade_distribution])
+    else:
+        decade_str = "时间数据不足"
+
+    return f"""你是专业的历史文书研究专家，精通中国明清社会经济史、土地制度史和地方社会网络研究。
+请根据以下跨文档知识图谱分析结果，撰写300-450字的深度分析报告。
+
+【基础数据】
 - 文书总量：{doc_count} 份地契
 - 时间范围：{time_str}
 - 涉及人物：{unique_people} 人
-- 交易概况：
+- 时代分布：{decade_str}
+
+【交易明细】
 {tx_block}
-- 角色切换人物（曾在不同文书中既作卖方又作买方）：{cross_str}
-- 核心人物（出现次数最多）：{top_people_str}
+
+【社会网络分析】
+- 核心人物：{top_people_str}
+- 角色切换人物：{cross_str}
+- 宗族聚集：{clan_str}
+- 活跃见证人：{witness_str}
+- 网络结构：{net_info}
+
+【地产流转】
+- 多次易手地块：{land_chain_count} 处
+- 流转链详情：
+{chain_block}
 - 主要交易地点：{locations_str}
-- 有多次易手记录的地块数：{land_chain_count} 处
+
+【经济数据】
+- {price_info}
 
 【分析要求】
-请选择有数据支撑的角度进行分析，语言专业凝练，不臆测无据内容，不超过250字。"""
+请从以下维度中选择2-3个有数据支撑的角度展开深度分析：
+1. **社会网络**：人际关系网络的结构特征，核心人物的社会资本，见证人的信用网络
+2. **土地流转**：地权变动的历史脉络，同一地块多次易手的深层原因
+3. **经济形态**：交易价格反映的土地经济状况，货币形态与市场化程度
+4. **宗族社会**：同姓聚集与宗族土地经营，家族间的土地往来模式
+5. **时空特征**：交易的时间分布规律，地理空间聚集与扩散
+
+要求：语言专业凝练，论述有据，每个分析角度需结合具体人名/地名/时间等数据，不臆测无据内容。"""
 
 
 def _generate_fallback_insights(statistics: Dict[str, Any]) -> str:
@@ -224,6 +311,10 @@ def _generate_fallback_insights(statistics: Dict[str, Any]) -> str:
     cross_role = statistics.get("cross_role_people", [])
     top_people = statistics.get("top_people", [])
     land_chain_count = statistics.get("land_chain_count", 0)
+    clan_groups = statistics.get("clan_groups", [])
+    witness_network = statistics.get("witness_network", [])
+    network_metrics = statistics.get("network_metrics", {})
+    avg_price = statistics.get("avg_price")
 
     parts = [f"本次跨文档分析共涉及 {doc_count} 份地契文书，"]
     if time_range.get("start") and time_range.get("end"):
@@ -232,17 +323,30 @@ def _generate_fallback_insights(statistics: Dict[str, Any]) -> str:
             f"（历时约 {time_range.get('span', 0)} 年），"
         )
     parts.append(f"共涉及 {unique_people} 位历史人物。")
+
     if cross_role:
         names = "、".join(cross_role[:3])
         parts.append(
-            f"其中 {len(cross_role)} 人曾在不同文书中兼任多重角色（包括：{names} 等），"
+            f"其中 {len(cross_role)} 人曾在不同文书中兼任多重角色（{names}），"
             "体现了地方社会中个人土地权益的动态变化。"
         )
     if top_people:
         top_names = "、".join([p["name"] for p in top_people[:3]])
-        parts.append(f"文书网络中的核心人物包括 {top_names} 等，在多份地契中频繁出现。")
+        parts.append(f"文书网络中的核心人物包括 {top_names}，在多份地契中频繁出现。")
+    if clan_groups:
+        for cg in clan_groups[:2]:
+            parts.append(f"{cg['surname']}姓家族有 {cg['count']} 人参与土地交易，体现了宗族经济的特征。")
+    if witness_network:
+        w = witness_network[0]
+        parts.append(f"最活跃的见证人为{w['name']}，共参与 {w['witness_count']} 次见证，是地方信用网络的关键节点。")
     if land_chain_count > 0:
         parts.append(f"同一地块被多次转让的情况共出现 {land_chain_count} 处，反映了土地产权的频繁流动。")
+    if network_metrics.get("bridge_people"):
+        bridge = network_metrics["bridge_people"][0]
+        parts.append(f"社会网络分析显示，{bridge['name']}是跨群体交往的关键桥接人物。")
+    if avg_price:
+        parts.append(f"可识别的交易平均价格约 {avg_price} 两。")
+
     return "".join(parts)
 
 

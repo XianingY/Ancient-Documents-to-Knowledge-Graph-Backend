@@ -1,6 +1,6 @@
 # 古代地契文书知识图谱 · 后端
 
-Python **3.11+**，框架 **FastAPI**，数据库 **SQLite**（`database/app.db`），异步任务 **Celery + Redis**，可选向量库 **ChromaDB**（问答主流程走 DB 取最近文书；Chroma 用于 `reindex` / `kb-status` 等，见 `app/services/rag_service.py`、`app/routers/chat.py`）。
+Python **3.11+**，框架 **FastAPI**，数据库 **SQLite**（`database/app.db`），异步任务 **Celery + Redis**，向量库 **ChromaDB**（智能问答为 **混合 RAG**：Chroma 语义检索 + 数据库按上传时间补充最新文书，合并去重后调用 LLM；未建索引时向量结果为空会自动加大 DB 侧条数补偿，见 `app/services/rag_service.py`。`POST /api/v1/chat/reindex` 将文书写入/更新 Chroma；`GET /api/v1/chat/kb-status` 统计的是 DB 侧「OCR 完成且有正文」的文书数，见 `app/routers/chat.py`）。
 
 ## 安装依赖
 
@@ -33,7 +33,14 @@ pip install -r requirements.txt
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | 可选，默认 `localhost:6379/0` |
 | `UPLOAD_DIR`、`SERVER_PORT` 等 | 可选，有默认值 |
 
-> 仓库中**没有** `.env.example`，需自行新建 `.env`。
+在项目根目录新建 `.env` 即可；**必填**项以 `app/core/config.py` 的 `Settings` 为准（当前至少需 `SECRET_KEY`）。可选示例如下（勿将真实密钥提交版本库）：
+
+```env
+SECRET_KEY=请替换为足够长的随机字符串
+# DASHSCOPE_API_KEY=
+# REDIS_HOST=localhost
+# REDIS_PORT=6379
+```
 
 ## 启动 API
 
@@ -53,7 +60,15 @@ uvicorn main:app --host 0.0.0.0 --port 3000 --reload
 
 ## Celery Worker
 
-上传图片后的 OCR、结构化、图谱等由 Worker 执行，**须先启动 Redis** 再启动 Worker：
+上传图片后，`POST /api/v1/images/upload` 会投递 **`task_ocr_image`**；Worker 内链路（`app/worker/tasks.py`）为：
+
+1. **`task_ocr_image`**：OCR 成功且正文非空、非 `Error:` 前缀时，投递 **`task_analyze_ocr_result`**（结构化）。
+2. **`task_analyze_ocr_result`**：结构化状态为 `done` 时，投递 **`task_analyze_structured_result`**（单文书关系图）。
+3. **`task_analyze_structured_result`**：生成并落库单文书关系图。
+
+跨文档图谱：**创建**多任务时由 FastAPI **`BackgroundTasks`** 调用 `analyze_multi_task`（见 `app/routers/multi_tasks.py`）；**`POST /api/v1/multi-relation-graphs`** 则投递 **`task_analyze_multi_task`** 到 Celery（见 `app/routers/graphs.py`）。
+
+须先启动 **Redis** 再启动 Worker：
 
 ```bash
 celery -A app.core.celery_app worker --loglevel=info --concurrency=2
@@ -100,8 +115,8 @@ pytest api_test/test_api.py -v -s
 
 ## 限流
 
-若已安装 **slowapi**，`main.py` 会注册默认 `200/minute` 限流；未安装时仅打日志警告，不影响启动。
+若已安装 **slowapi**（`requirements.txt` 已包含），`app/core/rate_limit.py` 中全局默认为 **`200/minute`（按客户端 IP）**，并设有应用级 **`1000/hour`**；各路由可通过 `@rate_limit("…")` 单独收紧（例如上传 `30/minute`）。`main.py` 注册 `SlowAPIMiddleware`；未安装 slowapi 时装饰器退化为无操作，仅可能影响启动日志。
 
 ## 说明：`POST /api/v1/images/upload`
 
-该路由在 `app/routers/images.py` 中在落库成功后调用 **`task_ocr_image.delay(image_id)`**；若 Celery 投递失败则仅记录警告，上传仍成功。**结构化**与**单文书关系图**不会由此路由自动触发，需 `POST /api/v1/structured-results`、`POST /api/v1/relation-graphs`（或 App 内操作）。OpenAPI 文案应与上述行为一致。
+该路由在 `app/routers/images.py` 中落库成功后调用 **`task_ocr_image.delay(image_id)`**；若 Celery 投递失败则仅记录警告，**上传仍返回成功**（响应中含 `pipeline_started: true` 表示已尝试投递，不代表 Worker 已消费）。在 **Redis + Worker 正常运行** 且 **OCR 成功** 的前提下，**结构化分析与单文书关系图**会由上述 Celery 任务链**自动排队**，无需再调 `POST /api/v1/structured-results` / `POST /api/v1/relation-graphs`。若需对**指定** OCR/结构化结果重新跑一遍，仍可手动调用这两个接口（与自动链共用同一批 Celery 任务）。

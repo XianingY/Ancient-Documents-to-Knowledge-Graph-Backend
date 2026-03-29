@@ -56,7 +56,15 @@ def _build_thumbnail_path(filename: str) -> str:
 
 
 def _ensure_thumbnail(image_path: str, thumbnail_path: str) -> None:
-    if os.path.exists(thumbnail_path):
+    # 原图晚于缩略图更新时须重新生成，否则列表缩略图与详情原图会不一致
+    need_build = True
+    if os.path.exists(thumbnail_path) and os.path.exists(image_path):
+        try:
+            if os.path.getmtime(thumbnail_path) >= os.path.getmtime(image_path):
+                need_build = False
+        except OSError:
+            need_build = True
+    if not need_build:
         return
     try:
         with PILImage.open(image_path) as img:

@@ -7,7 +7,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import Image, MultiTask, MultiTaskStructuredResult, User, get_db
+from collections import defaultdict
+
+from database import (
+    Image,
+    MultiTask,
+    MultiTaskStructuredResult,
+    OcrResult,
+    StructuredResult,
+    User,
+    get_db,
+)
 from app.core.deps import get_current_user, get_current_user_id
 from app.core.logger import get_logger
 from app.core.security import hash_password
@@ -147,6 +157,34 @@ async def get_user_multi_tasks(
     )
     total = db.query(MultiTask).filter(MultiTask.user_id == user_id).count()
 
+    task_ids = [t.id for t in multi_tasks]
+    preview_map: dict[int, list[int]] = {tid: [] for tid in task_ids}
+    if task_ids:
+        rows = (
+            db.query(
+                MultiTaskStructuredResult.multi_task_id,
+                OcrResult.image_id,
+            )
+            .select_from(MultiTaskStructuredResult)
+            .join(
+                StructuredResult,
+                StructuredResult.id == MultiTaskStructuredResult.structured_result_id,
+            )
+            .join(OcrResult, OcrResult.id == StructuredResult.ocr_result_id)
+            .filter(MultiTaskStructuredResult.multi_task_id.in_(task_ids))
+            .order_by(
+                MultiTaskStructuredResult.multi_task_id,
+                StructuredResult.id,
+            )
+            .all()
+        )
+        seen: dict[int, set[int]] = defaultdict(set)
+        for mt_id, image_id in rows:
+            if image_id not in seen[mt_id]:
+                seen[mt_id].add(image_id)
+                if len(preview_map[mt_id]) < 3:
+                    preview_map[mt_id].append(image_id)
+
     items = []
     for task in multi_tasks:
         doc_count = (
@@ -159,6 +197,7 @@ async def get_user_multi_tasks(
             "status": task.status.value,
             "doc_count": doc_count,
             "created_at": task.created_at.isoformat(),
+            "preview_image_ids": preview_map[task.id],
         })
 
     return {
