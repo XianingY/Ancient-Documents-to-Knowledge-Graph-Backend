@@ -1,6 +1,6 @@
 # API 文档
 
-> **提示**：与运行中服务不一致时，以 **`http://<host>:<port>/docs` OpenAPI** 及源码为准。本文已按当前后端实现校对关键段落（健康检查、上传、问答、限流、工作流）。
+> **提示**：与运行中服务不一致时，以 **`http://<host>:<port>/docs` OpenAPI** 及源码为准。本文已按当前后端实现校对关键段落（健康检查、上传与 Celery 任务链、混合 RAG 问答、限流、多任务后台分析、工作流）。
 
 ## 基础信息
 - 基地址: `http://localhost:3000`
@@ -264,9 +264,15 @@ Authorization: Bearer {access_token}
 ### POST /api/v1/images/upload
 上传图片文件。
 
-**当前实现**（`app/routers/images.py`）：保存文件并写入 `Image` 表后，调用 **`task_ocr_image.delay(db_image.id)`** 将 OCR 提交到 Celery。若队列不可用（如未启 Worker/Redis），异常被捕获并记录日志，**上传仍返回成功**，此时需客户端再调 `POST /api/v1/images/{image_id}/ocr` 补投。**结构化**与**单文书关系图**不在本路由内触发，须分别调用 `POST /api/v1/structured-results`、`POST /api/v1/relation-graphs`（或由 App 内按钮触发）。
+**当前实现**（`app/routers/images.py` + `app/worker/tasks.py`）：
 
-校验失败时多为 **HTTP 400/413/500**（如类型不支持、文件过大、为空、保存失败等），与早期「一律 200」的表述可能不一致，以路由实现为准。
+1. 保存文件并写入 `Image` 表后，调用 **`task_ocr_image.delay(db_image.id)`** 将 OCR 提交到 Celery。若 `delay` 抛错（如未启 Redis），异常被捕获并记录日志，**上传仍返回成功**。
+2. Worker 执行 **`task_ocr_image`**：OCR 成功后，若最新一条已完成 OCR 的正文非空且不以 `Error:` 开头，会自动投递 **`task_analyze_ocr_result`**（结构化）。
+3. **`task_analyze_ocr_result`** 成功后，若对应 **`StructuredResult` 状态为 `done`**，会自动投递 **`task_analyze_structured_result`**（单文书关系图）。
+
+因此：**无需**再因「自动流水线」单独调 `POST /api/v1/structured-results` / `POST /api/v1/relation-graphs`，**除非**要手动重跑、补跑，或队列曾失败需用 `POST /api/v1/images/{image_id}/ocr` 等补救。流水线依赖 **Redis + Celery Worker** 以及 **`DASHSCOPE_API_KEY`**（未配置时 OCR/后续步骤可能失败或降级，以 `ocr_service` / `analysis_service` 实现为准）。
+
+校验失败时多为 **HTTP 400/413/500**（如类型不支持、文件过大、为空、保存失败等），以路由实现为准。
 
 **请求头**
 ```
@@ -914,9 +920,20 @@ Authorization: Bearer {access_token}
 ## 智能问答路由 (前缀: /api/v1/chat)
 
 ### POST /api/v1/chat/query
-智能问答。上下文由 `rag_service._fetch_latest_docs_sync` **按图片上传时间倒序**取当前用户 **最近 8 条** `OcrResult.status == done` 且 `raw_text` 非空的记录；每条若存在最新一条已完成的 `StructuredResult`，则把 Time/Location/Seller/Buyer/Price/Subject 等写入元数据，原文参与 `_format_context`（每条正文节选最多约 250 字）。**不使用** Chroma 向量检索。生成模型为 DashScope **qwen-turbo**。可选多轮 `history` 在系统 Prompt 中**最多纳入最近 6 轮**（`rag_service._build_messages`）。
+智能问答（**混合 RAG**，实现见 `app/services/rag_service.py` 的 `rag_pipeline` / `hybrid_retrieve`）：
 
-> OpenAPI 摘要若写「向量检索 RAG」与上述实现不一致时，以本段及 `rag_service.py` 为准。
+1. **向量检索（ChromaDB）**：对问题做嵌入（DashScope `text-embedding-v1`；未配置 `DASHSCOPE_API_KEY` 时使用占位向量），默认取语义最相关 **`_VECTOR_TOP_K = 15`** 条；`query_documents` 按 `user_id` 过滤，无结果时放宽过滤重试。
+2. **数据库时序补充**：`_fetch_latest_docs_sync` 从 DB 取当前用户最新 **`_DB_RECENT_N = 5`** 份已完成 OCR 的文书（每张图只保留最新一条 OCR，再按图片上传时间倒序截断），并附加最新已完成 `StructuredResult` 中的 Time/Location/Seller/Buyer/Price/Subject 等到元数据。
+3. **合并**：`_hybrid_retrieve_sync` 按 `image_id` 去重，**向量结果在前**，再拼接 DB 补充；最终列表不超过 **`_MAX_CONTEXT = 20`**。若向量侧无结果，DB 侧取 **`max_context`（20）** 条作为补偿（`fallback_n` 逻辑）。
+4. **上下文格式化**：`_format_context` 按文书条数动态限制每条最大字数（**400 / 250 / 150**），非固定 250。
+5. **生成**：DashScope **`qwen-turbo`**；未配置 `DASHSCOPE_API_KEY` 时返回固定提示、不调用模型。
+6. **多轮**：`history` 在 `_build_messages` 中**最多最近 6 轮**。
+
+**流式**：`POST /api/v1/chat/query-stream`（SSE）使用相同的 **`hybrid_retrieve`** 与流式生成（见 `app/routers/chat.py`）。
+
+**知识库状态**：`GET /api/v1/chat/kb-status` 的 `indexed_count` 为 DB 中当前用户 **不同 `image_id`**、OCR 完成且 `raw_text` 非空的数量（**不是** Chroma 条数）。
+
+**重建索引**：`POST /api/v1/chat/reindex` 通过 `BackgroundTasks` 执行 `_reindex_all_sync`，将文书嵌入并 **upsert** 到 Chroma（`doc_id = image_{image_id}`）。
 
 **请求头**
 ```
@@ -956,8 +973,6 @@ Authorization: Bearer {access_token}
 }
 ```
 
-另支持流式：`POST /api/v1/chat/query-stream`（SSE），上下文构建与 `/query` 相同。`GET /api/v1/chat/kb-status` 返回的是 **数据库** 中符合「OCR 完成且有正文」的文书数量（与问答候选一致），**不是** Chroma 向量条数。`POST /api/v1/chat/reindex` 在后台把用户文书写入/更新 Chroma（`BackgroundTasks` + `_reindex_all_sync`）。
-
 ---
 
 ## 错误处理
@@ -983,7 +998,7 @@ Authorization: Bearer {access_token}
 
 ## 速率限制
 
-安装 **`slowapi`** 时，`main.py` 会启用默认 **`200/minute`**（按客户端 IP）。未安装 `slowapi` 时不会限流，仅打日志警告。
+安装 **`slowapi`** 时（`requirements.txt` 已包含），`app/core/rate_limit.py` 中 Limiter 配置为：默认 **`200/minute`**（按客户端 IP），应用级 **`1000/hour`**。各路由可叠加更严的 `@rate_limit`（例如图片上传 `30/minute`、问答 `30/minute`）。未安装 `slowapi` 时 `@rate_limit` 退化为无操作。
 
 ---
 
@@ -997,27 +1012,28 @@ POST /api/v1/auth/register  -> 注册账户，获得用户ID
 POST /api/v1/auth/login     -> 登录，获得 access_token
 ```
 
-#### 2. 图片处理流程
+#### 2. 图片与自动流水线（Celery）
 ```
-POST /api/v1/images/upload                 -> 上传并落库，并尝试 Celery 自动 OCR（失败则需手动 ocr）
-POST /api/v1/images/{imageId}/ocr          -> 手动/重试 OCR（Celery）
+POST /api/v1/images/upload                 -> 上传并落库，并尝试 Celery 投递 task_ocr_image
+  └─（Worker 内）OCR 成功 → task_analyze_ocr_result → 结构化 done → task_analyze_structured_result（单文书关系图）
+POST /api/v1/images/{imageId}/ocr          -> 手动补投/重试 OCR（Celery，同上可触发后续链）
 GET  /api/v1/images/{imageId}/ocr-results  -> 获取 OCR 结果 ID 列表
 GET  /api/v1/ocr-results/{ocrId}           -> 获取单个 OCR 详情
 ```
 
-#### 3. 结构化分析流程
+#### 3. 结构化与单文书关系图（自动 + 可选手动）
 ```
-POST /api/v1/structured-results                     -> 创建结构化分析任务
-GET  /api/v1/structured-results/{structuredId}      -> 获取结构化结果详情
-POST /api/v1/relation-graphs                        -> 创建关系图分析任务
+（通常无需）POST /api/v1/structured-results          -> 对指定 ocr_result_id 再投 Celery 结构化（与自动链同一任务）
+GET  /api/v1/structured-results/{structuredId}       -> 获取结构化结果详情
+（通常无需）POST /api/v1/relation-graphs             -> 对指定 structured_result_id 再投 Celery 单文书关系图
 GET  /api/v1/relation-graphs/{relationGraphId}      -> 获取关系图详情
 ```
 
 #### 4. 跨文档分析流程
 ```
-POST /api/v1/multi-tasks                            -> 创建跨文档任务（直接提供结构化结果ID）；创建后 BackgroundTasks 调 analyze_multi_task
-POST /api/v1/multi-tasks/from-images                -> 按图片 ID 解析最新结构化结果并创建任务；同上自动 analyze_multi_task
-POST /api/v1/multi-relation-graphs                  -> 可选：仅通过 Celery task_analyze_multi_task 生成跨文档图谱
+POST /api/v1/multi-tasks                            -> 创建跨文档任务（structured_result_ids）；创建后 FastAPI BackgroundTasks 调用异步 analyze_multi_task（非 Celery）
+POST /api/v1/multi-tasks/from-images                -> 按图片 ID 取最新结构化结果并创建任务；同上 BackgroundTasks + analyze_multi_task
+POST /api/v1/multi-relation-graphs                  -> 投递 Celery task_analyze_multi_task（与上条二选一或用于重算/补跑）
 GET  /api/v1/multi-relation-graphs/{multiGraphId}   -> 获取跨文档分析结果
 ```
 
