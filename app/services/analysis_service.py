@@ -722,16 +722,21 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
                 style = RELATION_STYLES.get(rel, RELATION_STYLES["Trade"])
                 count = edata.get("count", 1)
                 lbl = edata.get("label", rel)
+                
+                # 提取精简标签（"出售", "见证", "出让", "受让" 等）
+                short_lbl = lbl[:2] if lbl and len(lbl) >= 2 else lbl
+                
                 if count > 1:
                     lbl = f"{lbl}(×{count})"
+                    short_lbl = f"{short_lbl}(×{count})"
 
                 echarts_links.append({
                     "source": u,
                     "target": v,
-                    "value": lbl,
+                    "value": lbl,  # 悬停时显示完整信息（带时间价格）
                     "label": {
-                        "show": False,  # 默认隐藏边标签，避免文字过多显得杂乱
-                        "formatter": lbl,
+                        "show": True,  # 恢复显示
+                        "formatter": short_lbl,  # 只显示精简的动作，如"出售"、"见证"
                         "fontSize": 10,
                         "fontWeight": "bold",
                         "backgroundColor": "rgba(255,255,255,0.7)",
