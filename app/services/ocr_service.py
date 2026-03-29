@@ -42,6 +42,7 @@ _OCR_SYSTEM_PROMPT = """\
 【输出格式】
 - 只输出转录的文字原文，不添加任何说明、注释或解释
 - 不以"图片中的文字是："等句子开头
+- 不添加原文中没有的标点符号（如句号、逗号等现代标点）
 - 保留原文段落换行，不合并或拆分段落
 """
 
@@ -52,44 +53,57 @@ _OCR_USER_PROMPT = "请识别并转录图片中的全部文字。"
 
 def _preprocess_image(image_path: str) -> str:
     """
-    对原始图片进行增强处理，提升 OCR 质量：
-      1. 转灰度（去除色彩噪声）
-      2. 对比度增强（让墨迹与纸张更分明）
-      3. 锐化（让字边缘更清晰）
-      4. 分辨率限制（防止超出 API 尺寸上限同时保持细节）
+    对原始图片进行自适应增强处理，提升古代契约文书 OCR 质量。
+    关键改进（相比固定参数方案）：
+      1. EXIF 旋转修正（手机拍照方向适配）
+      2. 自适应对比度拉伸（autocontrast，按实际直方图调整而非固定倍数）
+      3. 高斯模糊 + UnsharpMask（比 MedianFilter + 固定锐化更好地保留笔画细节）
+      4. PNG 无损输出（避免 JPEG 压缩伪影干扰模型识别）
     返回处理后图片的临时路径（调用方负责删除）。
     """
     try:
-        from PIL import Image as PILImage, ImageEnhance, ImageFilter
+        from PIL import Image as PILImage, ImageFilter, ImageOps
     except ImportError:
-        return image_path  # PIL 不可用时直接用原图
+        return image_path
 
     try:
-        img = PILImage.open(image_path).convert("RGB")
+        img = PILImage.open(image_path)
 
-        # 限制长边不超过 3000px（API 推荐上限），保持高清细节
+        # ① EXIF 自动旋转（手机竖拍、横拍时元数据中的方向标记）
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        img = img.convert("RGB")
+
+        # ② 长边限制 3000px（兼顾 API 限制与传输效率）
         max_side = 3000
         w, h = img.size
         if max(w, h) > max_side:
             scale = max_side / max(w, h)
             img = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
 
-        # 转灰度图再回 RGB（去除黄化/褪色的色彩干扰）
-        img = img.convert("L").convert("RGB")
+        # ③ 转灰度（去除纸张泛黄、墨迹褪色等色彩干扰）
+        gray = img.convert("L")
 
-        # 对比度增强（古籍墨迹往往偏灰，增强到 1.5x）
-        img = ImageEnhance.Contrast(img).enhance(1.5)
+        # ④ 自适应对比度拉伸
+        # cutoff=0.5 去除最暗/最亮各 0.5% 极端像素后拉伸，自动适应不同图片条件
+        gray = ImageOps.autocontrast(gray, cutoff=0.5)
 
-        # 锐化（让笔画边缘更清晰，系数 2.0）
-        img = ImageEnhance.Sharpness(img).enhance(2.0)
+        # ⑤ 轻微高斯模糊去噪（radius=0.5，比 MedianFilter(3) 温和，减少对笔画边缘的损伤）
+        gray = gray.filter(ImageFilter.GaussianBlur(radius=0.5))
 
-        # 轻微去噪（减少纸张纹理干扰）
-        img = img.filter(ImageFilter.MedianFilter(size=3))
+        # ⑥ 自适应锐化（UnsharpMask 只增强边缘区域，不影响平滑背景区域）
+        gray = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
-        # 保存到临时文件
-        base, ext = os.path.splitext(image_path)
-        tmp_path = f"{base}_ocr_enhanced.jpg"
-        img.save(tmp_path, "JPEG", quality=92)
+        # ⑦ 转回 RGB（API 要求三通道输入）
+        img = gray.convert("RGB")
+
+        # ⑧ 保存为 PNG 无损格式（避免 JPEG 压缩伪影干扰模型识别）
+        base, _ = os.path.splitext(image_path)
+        tmp_path = f"{base}_ocr_enhanced.png"
+        img.save(tmp_path, "PNG")
         return tmp_path
 
     except Exception as e:
@@ -97,14 +111,51 @@ def _preprocess_image(image_path: str) -> str:
         return image_path
 
 
+# ── VL 输出清洗 ───────────────────────────────────────────────────────────────
+
+def _clean_vl_output(text: str) -> str:
+    """
+    清理 VL 模型输出中常见的幻觉与格式问题：
+      • 去除模型擅自添加的解释性前缀/后缀
+      • 合并多余空行
+    在后校正之前执行，确保校正模型拿到干净文本。
+    """
+    if not text:
+        return text
+
+    prefix_patterns = [
+        r'^图片中的文字[是为内容如下：:\s]*',
+        r'^以下是[图片中的]*文字[内容：:\s]*',
+        r'^识别结果[如下为：:\s]*',
+        r'^转录[结果内容如下为：:\s]*',
+        r'^文字内容[如下为：:\s]*',
+        r'^原文[内容如下为：:\s]*',
+    ]
+    for pattern in prefix_patterns:
+        text = re.sub(pattern, '', text, count=1)
+
+    suffix_patterns = [
+        r'\n注[：:].*$',
+        r'\n说明[：:].*$',
+        r'\n备注[：:].*$',
+        r'\n以上[是为].*转录.*$',
+        r'\n以上[是为].*识别.*$',
+    ]
+    for pattern in suffix_patterns:
+        text = re.sub(pattern, '', text, flags=re.DOTALL)
+
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 # ── OCR 后校正 Pass ───────────────────────────────────────────────────────────
 
 def _correct_ocr_text(raw_text: str) -> str:
     """
-    使用 Qwen-Turbo 对 OCR 原文做领域专项校正：
-      • 修正视觉相近字（如 己/已/巳、戊/戌/戍）
-      • 补全残缺字词（上下文明确时）
-      • 规范化数字和单位写法
+    使用 Qwen-Plus 对 OCR 原文做领域专项校正（从 Turbo 升级以获得更强语义理解）：
+      • 修正视觉相近字（如 己/已/巳、戊/戌/戍、买/卖、田/由/甲/申）
+      • 修正断字/连字错误
+      • 规范化大写数字和计量单位
     只在文字超过 20 字时启用，避免空白图片的无意义调用。
     """
     if not settings.DASHSCOPE_API_KEY or len(raw_text.strip()) < 20:
@@ -115,23 +166,32 @@ def _correct_ocr_text(raw_text: str) -> str:
         dashscope.api_key = settings.DASHSCOPE_API_KEY
 
         prompt = (
-            "以下是对一份中国古代契约文书进行 OCR 识别后得到的原始文本，"
-            "其中可能存在视觉相近字混淆（如己/已/巳、戊/戌/戍、土/士、"
-            "大/太/犬）、因图片模糊导致的误识别，以及不符合古代契约用语规范的地方。\n\n"
-            "请根据上下文和古代契约文书的语言规律，对明显错误进行最小化校正。\n"
-            "规则：\n"
-            "1. 只修正明显的识别错误，不改动可能正确的内容\n"
-            "2. 保留所有繁体字、异体字，不要简化\n"
-            "3. 保留 □ 占位符，不要擅自填充\n"
-            "4. 不添加任何注释或说明，只输出校正后的纯文本\n\n"
-            f"原始文本：\n{raw_text}"
+            "以下是对一份中国古代契约文书进行 OCR 识别后得到的原始文本。\n\n"
+            "请根据上下文和古代契约文书的语言规律，对明显的 OCR 识别错误进行最小化校正。\n\n"
+            "【常见 OCR 误识别对照】\n"
+            "- 形近字：己/已/巳、戊/戌/戍/戎、土/士/壬、大/太/犬/夫、"
+            "日/曰/目、末/未、买/卖、田/由/甲/申、丙/两、干/于/千、"
+            "亩/畝、钱/銭、两/兩、契/楔、人/入、壹/壶、冬/终\n"
+            "- 数字混淆：壹/壶、贰/贰/弐、叁/参、伍/伍\n"
+            "- 断字/连字：一个字被误识为两个部件，或两个字被合为一个\n\n"
+            "【校正规则】\n"
+            "1. 只修正明显的识别错误，不改动语义上可能正确的内容\n"
+            "2. 保留所有繁体字、异体字，不要简化为现代简体字\n"
+            "3. 保留 □ 占位符，不要擅自填充或删除\n"
+            "4. 保留原文的换行和段落结构\n"
+            "5. 不添加原文中没有的标点符号\n"
+            "6. 不添加任何注释、说明、前缀或后缀\n"
+            "7. 直接输出校正后的纯文本\n\n"
+            f"OCR 原始文本：\n{raw_text}"
         )
 
         response = dashscope.Generation.call(
-            model="qwen-turbo",
+            model="qwen-plus",
             messages=[{"role": "user", "content": prompt}],
             result_format="message",
             max_tokens=4096,
+            temperature=0.1,
+            top_p=0.3,
         )
 
         if response.status_code == 200:
@@ -139,9 +199,17 @@ def _correct_ocr_text(raw_text: str) -> str:
                 corrected = response.output.choices[0].message.content
             except (AttributeError, IndexError, TypeError):
                 corrected = response.output["choices"][0]["message"]["content"]
-            # 防止模型输出解释性文字（以"校正后"/"修正后"等开头时去掉）
-            corrected = re.sub(r'^(校正后[的文本：:\s]*|修正后[的文本：:\s]*)', '', corrected).strip()
-            return corrected if corrected else raw_text
+
+            corrected = re.sub(
+                r'^(校正后[的文本内容：:\s]*|修正后[的文本内容：:\s]*|'
+                r'以下是校正后[的文本：:\s]*|校正[结果如下：:\s]*)',
+                '', corrected
+            ).strip()
+
+            # 长度校验：校正后文本长度不应偏差太大，防止模型生成无关内容
+            if corrected and 0.5 < len(corrected) / max(len(raw_text), 1) < 2.0:
+                return corrected
+            return raw_text
         return raw_text
 
     except Exception as e:
@@ -151,14 +219,16 @@ def _correct_ocr_text(raw_text: str) -> str:
 
 # ── 主识别函数 ────────────────────────────────────────────────────────────────
 
-def _run_api_predict(input_file: str) -> str:
+def _run_api_predict(input_file: str, max_retries: int = 3) -> str:
     """
     使用 DashScope Qwen-VL-Max 对古代契约文书图片进行 OCR，
     并通过专项 Prompt 引导模型输出高质量转录结果。
+    内置重试机制（指数退避），应对 API 瞬时故障。
     """
     try:
         from dashscope import MultiModalConversation
         import dashscope
+        import time
 
         dashscope.api_key = settings.DASHSCOPE_API_KEY
         if not dashscope.api_key:
@@ -180,21 +250,32 @@ def _run_api_predict(input_file: str) -> str:
             },
         ]
 
-        # 使用 qwen-vl-max（比 plus 更强的视觉理解能力，对古籍字形更鲁棒）
-        response = MultiModalConversation.call(
-            model="qwen-vl-max",
-            messages=messages,
-        )
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = MultiModalConversation.call(
+                    model="qwen-vl-max",
+                    messages=messages,
+                    top_p=0.1,
+                )
 
-        if response.status_code == 200:
-            content_list = response.output.choices[0].message.content
-            for item in content_list:
-                if "text" in item:
-                    return item["text"]
-            return ""
-        else:
-            print(f"DashScope API Error: {response.code} - {response.message}")
-            return f"Error: API Request failed with code {response.code}"
+                if response.status_code == 200:
+                    content_list = response.output.choices[0].message.content
+                    for item in content_list:
+                        if "text" in item:
+                            return item["text"]
+                    return ""
+                else:
+                    last_error = f"API Error: {response.code} - {response.message}"
+                    print(f"DashScope API Error (attempt {attempt + 1}/{max_retries}): {response.code} - {response.message}")
+            except Exception as e:
+                last_error = str(e)
+                print(f"API OCR attempt {attempt + 1}/{max_retries} failed: {e}")
+
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+
+        return f"Error: {last_error}"
 
     except Exception as e:
         print(f"API OCR execution failed: {e}")
@@ -245,10 +326,10 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             if not extracted_text or extracted_text.startswith("Error:"):
                 extracted_text = extracted_text or "未能识别到文字。"
 
-            # ③ 基础清洗（合并多余空行）
-            cleaned_text = re.sub(r"\n{3,}", "\n\n", extracted_text).strip()
+            # ③ VL 输出清洗（去除模型幻觉前缀/后缀、合并多余空行）
+            cleaned_text = _clean_vl_output(extracted_text)
 
-            # ④ 后校正 Pass（用文本 LLM 修正视觉相近字误识别）
+            # ④ 后校正 Pass（用 qwen-plus 修正视觉相近字误识别）
             cleaned_text = _correct_ocr_text(cleaned_text)
 
             ocr_result.raw_text = cleaned_text
