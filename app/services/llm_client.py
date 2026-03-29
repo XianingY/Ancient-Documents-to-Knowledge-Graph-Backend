@@ -71,14 +71,29 @@ _TRANSLATE_SYSTEM = """\
 
 
 def _parse_json_response(content: str) -> Dict[str, Any]:
-    """从 LLM 响应中提取 JSON，兼容带 markdown 代码块的情况"""
-    content = re.sub(r"^```(?:json)?\s*", "", content.strip())
-    content = re.sub(r"\s*```$", "", content)
-    return json.loads(content)
+    """从 LLM 响应中提取 JSON，兼容多种格式（代码块、混合文本等）"""
+    cleaned = content.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    return json.loads(cleaned)
 
 
-def _call_llm_messages(system: str, user: str, model: str = "qwen-plus") -> str:
-    """通用 messages 格式调用，返回纯文本"""
+def _call_llm_messages(system: str, user: str, model: str = "qwen-plus",
+                       temperature: float = 0.1, top_p: float = 0.3) -> str:
+    """通用 messages 格式调用，返回纯文本。默认低温度以获取确定性输出。"""
     response = Generation.call(
         model=model,
         messages=[
@@ -86,6 +101,8 @@ def _call_llm_messages(system: str, user: str, model: str = "qwen-plus") -> str:
             {"role": "user", "content": user},
         ],
         result_format="message",
+        temperature=temperature,
+        top_p=top_p,
     )
     if response.status_code == 200:
         return response.output.choices[0].message.content.strip()
