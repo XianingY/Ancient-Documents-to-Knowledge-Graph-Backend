@@ -1,12 +1,20 @@
-# API 文档
+# 文渊智图 — API 接口文档
 
-> **提示**：与运行中服务不一致时，以 **`http://<host>:<port>/docs` OpenAPI** 及源码为准。本文已按当前后端实现校对关键段落（健康检查、上传与 Celery 任务链、混合 RAG 问答、限流、多任务后台分析、工作流）。
+> 古代地契文书智能知识图谱系统 · 后端 API 详细说明
+
+本文档完整描述了系统后端提供的所有 RESTful API 接口，包括请求参数、响应格式与使用流程。
+
+启动服务后，也可通过 Swagger UI（`http://<host>:<port>/docs`）或 ReDoc（`http://<host>:<port>/redoc`）查看交互式文档。
 
 ## 基础信息
-- 基地址: `http://localhost:3000`
-- API 版本: v1
-- 大多数请求和响应为 JSON；图片获取接口返回二进制文件
-- 除 `GET /api`、`POST /api/v1/auth/register` 和 `POST /api/v1/auth/login` 外，其他端点都需要 Bearer Token 认证
+
+| 项目 | 说明 |
+|------|------|
+| 基地址 | `http://localhost:3000` |
+| API 版本 | v1 |
+| 数据格式 | 请求/响应均为 JSON（图片获取接口返回二进制文件） |
+| 认证方式 | Bearer Token（JWT） |
+| 公开接口 | `GET /api`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login` |
 
 ---
 

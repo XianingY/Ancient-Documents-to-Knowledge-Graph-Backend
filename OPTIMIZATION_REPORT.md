@@ -1,77 +1,87 @@
-# 项目优化验收报告
+# 文渊智图 — 后端技术报告
 
-**项目名称**: Ancient-Documents-to-Knowledge-Graph-Backend  
-**验收日期**: 2026-03-17  
-**说明**: 下文描述与**当前仓库代码**一致；路径为相对仓库根目录。
+> 古代地契文书智能知识图谱系统 · 后端架构与技术要点
 
----
+## 1. 系统概述
 
-## 1. 概述
+后端采用 **FastAPI + SQLAlchemy（SQLite）+ Celery（Redis）+ ChromaDB** 架构。OCR、结构化提取与问答生成能力通过**阿里云 DashScope** 大模型 API 调用实现；跨文档知识图谱在 `analysis_service` 中结合 **NetworkX** 图分析与自研 `EntityResolver` 实体消歧算法构建。
 
-后端为 FastAPI + SQLAlchemy（SQLite）+ Celery（Redis）+ ChromaDB，OCR/结构化/部分生成能力通过 **阿里云 DashScope** 调用；跨文档图谱在 `analysis_service` 中结合 **NetworkX** 与 `EntityResolver` 构建。
+## 2. 架构设计
 
----
+### 2.1 分层架构
 
-## 2. 架构与规范
+系统采用清晰的三层架构设计：
 
-### 2.1 配置
+- **路由层**（`app/routers/`）：负责 HTTP 请求处理、参数校验、鉴权和响应格式化，通过依赖注入获取当前用户与数据库会话
+- **服务层**（`app/services/`）：封装核心业务逻辑，包括 OCR 处理、结构化分析、图谱生成、RAG 问答等
+- **数据层**（`database.py`）：ORM 模型定义与数据库会话管理
 
-- **文件**: `app/core/config.py`
-- **内容**: 使用 `pydantic-settings` 从环境变量 / `.env` 加载；`SECRET_KEY` 无默认值（必填）；集中定义 `REDIS_*`、`UPLOAD_DIR`、`SERVER_PORT` 等。
+### 2.2 配置管理
 
-### 2.2 分层
+使用 `pydantic-settings` 从环境变量 / `.env` 文件加载配置，`SECRET_KEY` 为必填项，其余配置均有合理默认值，支持灵活的部署环境切换。
 
-- **路由**: `app/routers/*` — 参数校验、鉴权、调用 Service 或投递 Celery / `BackgroundTasks`。
-- **业务**: `app/services/*` — OCR、结构化、图谱、RAG、跨文档编排等。
-- **数据**: `database.py` — ORM 模型与 `get_db` 会话。
+### 2.3 异步任务架构
 
-### 2.3 多任务路由
+通过 Celery + Redis 实现异步任务队列，链式触发机制确保分析流水线自动运转：
 
-- **文件**: `app/routers/multi_tasks.py`
-- **内容**: 使用 Pydantic 请求体；创建 MultiTask 后通过 `BackgroundTasks` 调用异步 `analyze_multi_task`（非 Celery 默认路径，见该文件 `_auto_analyze`）。
+```
+task_ocr_image → task_analyze_ocr_result → task_analyze_structured_result
+```
 
----
+跨文档分析任务支持 Celery 投递与 FastAPI BackgroundTasks 两种执行路径。
 
-## 3. 性能与并发
+## 3. 核心算法
 
-### 3.1 线程池包装阻塞调用
+### 3.1 实体消歧算法
 
-- **文件**: `app/services/rag_service.py`、`app/services/llm_client.py`、`app/services/analysis_service.py` 等
-- **内容**: 对 DashScope 同步 SDK、`run_in_threadpool` 等在 async 路由中避免阻塞事件循环。OCR 主路径在 **Celery Worker** 中以同步方式执行（`ocr_service.ocr_image_by_id`），而非在 HTTP 进程内跑 PaddleOCR。
+跨文档分析中的关键挑战在于识别不同文书中的同一实体。系统采用多维度融合的消歧策略：
 
-### 3.2 数据库访问
+- **姓名相似度**：0.4 × 字符级相似度 + 0.6 × 语义向量相似度（DashScope `text-embedding-v1`）
+- **综合评分**：0.6 × 姓名得分 + 时间接近度阶梯加分 + 地点匹配加分
+- **合并阈值**：综合得分 ≥ 0.45 时判定为同一实体
 
-- **文件**: `app/services/analysis_service.py`（跨文档分析等）
-- **内容**: 对结构化结果等使用 `filter(..., id.in_(ids))` 批量查询，减少循环内单条查询。
+当语义向量不可用时，系统自动回退至纯字符级相似度计算。
 
----
+### 3.2 混合 RAG 检索
 
-## 4. 功能要点（与实现一致）
+智能问答采用混合检索策略，兼顾语义相关性与时效性：
 
-### 4.1 Celery + Redis
+1. **向量检索**（ChromaDB）：对用户问题做嵌入，检索语义最相关的文书（Top-K = 15）
+2. **时序补充**（数据库）：取当前用户最新上传的文书作为上下文补充
+3. **合并去重**：按 `image_id` 去重，向量结果优先，最终上下文不超过 20 条
+4. **动态裁剪**：根据上下文条数动态调整每条文书的最大字数限制
+5. **降级策略**：向量库无结果时，自动加大数据库侧取数量作为补偿
 
-- **文件**: `app/core/celery_app.py`、`app/worker/tasks.py`
-- **内容**: OCR、单文书结构化、单文书关系图、以及 `POST /api/v1/multi-relation-graphs` 触发的跨文档任务等通过 Celery 异步执行；Broker/Backend 使用 `settings.REDIS_URL`。
+### 3.3 知识图谱构建
 
-### 4.2 ChromaDB
+- **单文书**：基于结构化提取结果，构建人物-契约-信息的关系网络，生成 ECharts 力导向图数据
+- **跨文档**：在 NetworkX 上构建跨文书关系，包含买卖、见证、地块流转等边类型，并计算网络度数、密度、桥节点、社区划分等指标
 
-- **文件**: `app/services/vector_store/chroma.py`、`app/services/ocr_service.py`、`app/services/analysis_service.py`、`app/routers/chat.py`
-- **内容**: OCR 完成与结构化完成后对文书做 **upsert**；`POST /api/v1/chat/reindex`、`GET /api/v1/chat/kb-status` 维护/查询索引。智能问答主流程在 `rag_service.rag_pipeline` 中从 **数据库取当前用户最近 8 条**已完成 OCR 的文书作上下文，**不**以 Chroma 向量检索为主路径（`retrieve_context` 仍保留在代码中）。
+## 4. 性能优化
 
-### 4.3 实体消歧
+### 4.1 异步与并发
 
-- **文件**: `app/services/analysis_components/entity_resolver.py`
-- **内容**: 字符相似与 DashScope **text-embedding-v1** 向量融合，再结合时间、地点加权；阈值与公式以源码为准。
+- 阻塞性 AI 调用（DashScope SDK）通过 `run_in_threadpool` 包装，避免阻塞 FastAPI 事件循环
+- OCR 主路径在 Celery Worker 中以同步方式执行，与 HTTP 进程隔离
+- 流式问答（SSE）使用异步生成器，实现边生成边推送
 
-### 4.4 限流
+### 4.2 数据库优化
 
-- **文件**: `main.py`
-- **内容**: 若安装 `slowapi`，则注册默认限流；未安装时记录警告，应用仍可启动。
+- 批量查询：跨文档分析中使用 `filter(id.in_(ids))` 替代循环单条查询
+- 分页设计：所有列表接口支持 `skip`/`limit` 分页，避免全量返回
 
----
+### 4.3 速率限制
 
-## 5. 总结
+通过 slowapi 实现 API 级别的速率限制，全局默认 200 次/分钟，敏感接口（如上传、问答）设有更严格的限制。
 
-当前后端具备清晰分层、异步任务解耦、向量索引与可选 API 限流。后续可加强单元测试与 CI。
+## 5. 容器化部署
 
-**验收结果**: ✅ **通过**（表述已与当前代码对齐）
+通过 Docker Compose 实现一键部署，编排三个服务：
+
+| 服务 | 说明 |
+|------|------|
+| `backend` | FastAPI API 服务（端口 3000） |
+| `redis` | Redis 消息代理与缓存 |
+| `celery_worker` | Celery 异步任务执行器 |
+
+支持数据持久化（数据库、图片目录挂载至宿主机），配合 Nginx 反向代理实现生产级 HTTPS 部署。
