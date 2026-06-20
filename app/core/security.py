@@ -1,6 +1,8 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import time
+from collections import OrderedDict
 import uuid
 import jwt
 from passlib.context import CryptContext
@@ -16,7 +18,32 @@ security = HTTPBearer()
 # 登出时将 jti 写入 Redis，TTL 与 Token 过期时间一致
 # 若 Redis 不可用则降级为内存集合（重启后失效，但不影响基本功能）
 
-_memory_blacklist: set[str] = set()
+class TTLSet:
+    """Bounded set with TTL-based expiration. Max 10000 entries."""
+    def __init__(self, max_size: int = 10000):
+        self._data: OrderedDict[str, float] = OrderedDict()
+        self._max_size = max_size
+    
+    def add(self, item: str, ttl_seconds: int) -> None:
+        self._data[item] = time.monotonic() + ttl_seconds
+        self._cleanup()
+    
+    def contains(self, item: str) -> bool:
+        if item not in self._data:
+            return False
+        if time.monotonic() > self._data[item]:
+            del self._data[item]
+            return False
+        return True
+    
+    def _cleanup(self) -> None:
+        now = time.monotonic()
+        while self._data and now > next(iter(self._data.values())):
+            self._data.popitem(last=False)
+        while len(self._data) > self._max_size:
+            self._data.popitem(last=False)
+
+_memory_blacklist = TTLSet()
 
 def _get_redis():
     try:
@@ -39,7 +66,7 @@ def blacklist_token(jti: str, ttl_seconds: int) -> None:
     if r:
         r.setex(f"bl:{jti}", ttl_seconds, "1")
     else:
-        _memory_blacklist.add(jti)
+        _memory_blacklist.add(jti, ttl_seconds)
 
 
 def is_token_blacklisted(jti: str) -> bool:
@@ -47,7 +74,7 @@ def is_token_blacklisted(jti: str) -> bool:
     r = _get_redis()
     if r:
         return bool(r.exists(f"bl:{jti}"))
-    return jti in _memory_blacklist
+    return _memory_blacklist.contains(jti)
 
 
 # ── 密码工具 ─────────────────────────────────────────────────

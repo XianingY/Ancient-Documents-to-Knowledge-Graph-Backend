@@ -12,6 +12,9 @@ import networkx as nx
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from fastapi.concurrency import run_in_threadpool
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 from database import (
     StructuredResult, RelationGraph, MultiTask, MultiRelationGraph,
@@ -37,11 +40,11 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
     """
     ocr_result = db.query(OcrResult).filter(OcrResult.id == ocr_result_id).first()
     if not ocr_result:
-        print(f"OcrResult {ocr_result_id} not found")
+        logger.warning("ocr_result_not_found", extra={"ocr_result_id": ocr_result_id})
         return
 
     if not ocr_result.raw_text:
-        print(f"OcrResult {ocr_result_id} has no text")
+        logger.warning("ocr_result_no_text", extra={"ocr_result_id": ocr_result_id})
         return
 
     # ① 复用已有记录或新建（避免同一 OCR 多次刷新产生多条记录）
@@ -81,7 +84,7 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
         structured_result.content = json.dumps(structured_data, ensure_ascii=False)
         structured_result.status = OcrStatus.DONE
         db.commit()
-        print(f"Structured analysis for {ocr_result_id} completed.")
+        logger.info("structured_analysis_completed", extra={"ocr_result_id": ocr_result_id})
 
         # ④ 用富文本覆盖 ChromaDB 向量索引
         # doc_id = image_{image_id}，与 OCR 阶段一致，upsert 覆盖基础版，补充结构化元数据
@@ -132,12 +135,12 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
                 embedding=embedding,
                 metadata=metadata,
             )
-            print(f"Image {image_id} re-indexed with structured enrichment (doc_id=image_{image_id}).")
+            logger.info("chromadb_structured_enrichment", extra={"image_id": image_id})
         except Exception as idx_err:
-            print(f"ChromaDB enrichment indexing failed (non-fatal): {idx_err}")
+            logger.warning("chromadb_enrichment_indexing_failed", extra={"error": str(idx_err)})
 
     except Exception as e:
-        print(f"Error analyzing OCR result {ocr_result_id}: {e}")
+        logger.error("structured_analysis_error", extra={"ocr_result_id": ocr_result_id, "error": str(e)})
         structured_result.content = json.dumps({"error": str(e)})
         structured_result.status = OcrStatus.FAILED
         db.commit()
@@ -238,7 +241,7 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
         ).all()
 
         if not structured_results:
-            print(f"No structured results for MultiTask {multi_task_id}")
+            logger.warning("multi_task_no_results", extra={"multi_task_id": multi_task_id})
             return
 
         parsed_datas: List[Dict] = []
@@ -818,10 +821,10 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
         )
         db.add(multi_relation_graph)
         db.commit()
-        print(f"Multi-task analysis for {multi_task_id} completed (v3 enhanced).")
+        logger.info("multi_task_analysis_completed", extra={"multi_task_id": multi_task_id})
 
     except Exception as e:
-        print(f"Error analyzing multi task {multi_task_id}: {str(e)}")
+        logger.error("multi_task_analysis_error", extra={"multi_task_id": multi_task_id, "error": str(e)})
         multi_relation_graph = MultiRelationGraph(
             multi_task_id=multi_task_id,
             content=json.dumps({"error": str(e)}),

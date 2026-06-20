@@ -93,41 +93,33 @@ async def retrieve_context(
 # ── DB 取最新文书（时序补充）────────────────────────────────────
 
 def _fetch_latest_docs_sync(db: Session, user_id: int, top_n: int = _DB_RECENT_N) -> list:
-    """
-    从数据库获取当前用户最新 top_n 份已完成 OCR 的文书。
-    每张图片只取最新的一条 OCR 结果（按 OcrResult.id DESC 去重）。
-    """
     from database import Image, OcrResult, OcrStatus
     from sqlalchemy.orm import joinedload
+    from sqlalchemy import func
 
     try:
-        ocr_all = (
-            db.query(OcrResult)
-            .options(joinedload(OcrResult.image))
+        subq = (
+            db.query(func.max(OcrResult.id).label("max_id"))
             .join(Image, OcrResult.image_id == Image.id)
             .filter(
                 OcrResult.status == OcrStatus.DONE,
                 Image.user_id == user_id,
                 OcrResult.raw_text.isnot(None),
             )
+            .group_by(OcrResult.image_id)
+            .subquery()
+        )
+
+        ocrs = (
+            db.query(OcrResult)
+            .options(joinedload(OcrResult.image))
+            .filter(OcrResult.id.in_(db.query(subq.c.max_id)))
             .order_by(OcrResult.id.desc())
+            .limit(top_n)
             .all()
         )
 
-        seen_images: set = set()
-        unique_ocrs: list = []
-        for ocr in ocr_all:
-            if ocr.image_id not in seen_images:
-                seen_images.add(ocr.image_id)
-                unique_ocrs.append(ocr)
-
-        unique_ocrs.sort(
-            key=lambda o: o.image.upload_time if o.image else o.id,
-            reverse=True,
-        )
-        unique_ocrs = unique_ocrs[:top_n]
-
-        return [_ocr_to_context_item(db, ocr, user_id) for ocr in unique_ocrs]
+        return [_ocr_to_context_item(db, ocr, user_id) for ocr in ocrs]
     except Exception as e:
         logger.warning("fetch_latest_docs_failed", extra={"error": str(e)})
         return []

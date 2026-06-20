@@ -17,16 +17,32 @@ def get_multi_task(db: Session, multi_task_id: int) -> Optional[MultiTask]:
     return db.query(MultiTask).filter(MultiTask.id == multi_task_id).first()
 
 def create_multi_task(db: Session, user_id: int, structured_result_ids: List[int]) -> MultiTask:
-    for sr_id in structured_result_ids:
-        sr = db.query(StructuredResult).filter(StructuredResult.id == sr_id).first()
-        if not sr:
-            raise ResourceNotFoundError(f"StructuredResult {sr_id} not found")
-        ocr = db.query(OcrResult).filter(OcrResult.id == sr.ocr_result_id).first()
+    # Batch validate all structured results exist and belong to user
+    srs = db.query(StructuredResult).filter(StructuredResult.id.in_(structured_result_ids)).all()
+    sr_map = {sr.id: sr for sr in srs}
+
+    missing = [sid for sid in structured_result_ids if sid not in sr_map]
+    if missing:
+        raise ResourceNotFoundError(f"StructuredResults not found: {missing}")
+
+    # Batch fetch all OcrResults
+    ocr_ids = [sr_map[sid].ocr_result_id for sid in structured_result_ids]
+    ocrs = db.query(OcrResult).filter(OcrResult.id.in_(ocr_ids)).all()
+    ocr_map = {ocr.id: ocr for ocr in ocrs}
+
+    # Batch fetch all Images and validate ownership
+    image_ids = [ocr_map[sr_map[sid].ocr_result_id].image_id for sid in structured_result_ids]
+    images = db.query(Image).filter(Image.id.in_(image_ids)).all()
+    image_map = {img.id: img for img in images}
+
+    for sid in structured_result_ids:
+        sr = sr_map[sid]
+        ocr = ocr_map.get(sr.ocr_result_id)
         if not ocr:
-            raise ResourceNotFoundError(f"OcrResult for StructuredResult {sr_id} not found")
-        image = db.query(Image).filter(Image.id == ocr.image_id).first()
+            raise ResourceNotFoundError(f"OcrResult for StructuredResult {sid} not found")
+        image = image_map.get(ocr.image_id)
         if not image or image.user_id != user_id:
-            raise PermissionDeniedError(f"StructuredResult {sr_id} does not belong to the current user")
+            raise PermissionDeniedError(f"StructuredResult {sid} does not belong to the current user")
 
     try:
         multi_task = MultiTask(

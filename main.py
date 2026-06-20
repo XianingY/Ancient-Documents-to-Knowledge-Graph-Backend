@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from app.core.logger import setup_logging, get_logger
 from database import init_db
 
+from app.core.config import settings
+
 # 初始化日志
 setup_logging()
 logger = get_logger(__name__)
@@ -41,16 +43,7 @@ init_db()
 
 app = FastAPI(title="古代地契文书知识图谱 API", version="2.0.0")
 
-# 允许的来源：本地开发 + 线上服务器地址
-# 如需新增来源，在此列表追加即可
-_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:8081",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:8081",
-    "http://8.162.9.49:3000",
-    "exp://8.162.9.49:8081",
-]
+_ALLOWED_ORIGINS = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,5 +90,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    from app.core.config import settings
     uvicorn.run(app, host="0.0.0.0", port=settings.SERVER_PORT)

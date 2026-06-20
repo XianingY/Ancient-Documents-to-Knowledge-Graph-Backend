@@ -9,6 +9,9 @@ from typing import Any, Dict
 from sqlalchemy.orm import Session
 
 from database import OcrStatus, RelationGraph, StructuredResult, get_beijing_time
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _split_names(raw: str) -> list:
@@ -238,7 +241,7 @@ async def analyze_structured_result(structured_result_id: int, db: Session) -> N
     try:
         data = json.loads(structured_result.content)
     except json.JSONDecodeError:
-        print(f"Invalid JSON in StructuredResult {structured_result_id}")
+        logger.warning("invalid_json_structured_result", extra={"structured_result_id": structured_result_id})
         return
 
     # ① 复用已有记录或新建（避免同一结构化结果多次刷新产生多条记录）
@@ -279,10 +282,10 @@ async def analyze_structured_result(structured_result_id: int, db: Session) -> N
         relation_graph.content = json.dumps(echarts_option, ensure_ascii=False)
         relation_graph.status = OcrStatus.DONE
         db.commit()
-        print(f"Relation graph for StructuredResult {structured_result_id} completed.")
+        logger.info("relation_graph_completed", extra={"structured_result_id": structured_result_id})
 
     except Exception as e:
-        print(f"Error building relation graph {structured_result_id}: {e}")
+        logger.error("relation_graph_error", extra={"structured_result_id": structured_result_id, "error": str(e)})
         relation_graph.content = json.dumps({"error": str(e)})
         relation_graph.status = OcrStatus.FAILED
         db.commit()

@@ -1,10 +1,11 @@
 """认证路由：注册 / 登录 / 登出 / Token 刷新"""
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from database import User, get_beijing_time, get_db
@@ -29,6 +30,22 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     email: Optional[str] = None
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('密码长度至少8位')
+        return v
+
+    @field_validator('username')
+    @classmethod
+    def validate_username(cls, v):
+        if len(v) < 3 or len(v) > 32:
+            raise ValueError('用户名长度需在3-32位之间')
+        if not re.match(r'^[a-zA-Z0-9_\u4e00-\u9fff]+$', v):
+            raise ValueError('用户名只能包含字母、数字、下划线或中文')
+        return v
 
 
 class LoginRequest(BaseModel):
@@ -69,7 +86,12 @@ async def register(payload: RegisterRequest, request: Request, db: Session = Dep
 @rate_limit("20/minute")
 async def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == payload.username).first()
-    if not db_user or not verify_password(payload.password, db_user.password_hash):
+    if not db_user:
+        verify_password(payload.password, "$2b$12$LJ3m4ys3Lz1YRj1GZ5Kz4eQxKz1YRj1GZ5Kz4eQxKz1YRj1GZ5Kz4")
+        logger.warning("login_failed", extra={"username": payload.username})
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    
+    if not verify_password(payload.password, db_user.password_hash):
         logger.warning("login_failed", extra={"username": payload.username})
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
@@ -117,6 +139,13 @@ async def refresh_token(
     db_user = db.query(User).filter(User.username == username).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
+
+    jti = payload.get("jti")
+    if jti:
+        from datetime import timezone as tz
+        exp = payload.get("exp", 0)
+        remaining = max(int(exp - datetime.now(tz.utc).timestamp()), 0)
+        blacklist_token(jti, remaining + 60)
 
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     new_access_token = create_access_token(

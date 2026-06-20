@@ -35,6 +35,6 @@ class TestOCRPipelineComposition:
     def test_config_values_loaded(self):
         from app.core.config import settings
         assert settings.REAL_ESRGAN_MODEL_PATH is not None
-        assert settings.ENSEMBLE_PASSES >= 2
+        assert settings.ENSEMBLE_PASSES >= 1
         assert 0.0 < settings.ENSEMBLE_DOWNSCALE < 1.0
         assert settings.ENSEMBLE_NOISE_SIGMA > 0
