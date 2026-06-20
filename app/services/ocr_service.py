@@ -22,28 +22,50 @@ _OCR_SYSTEM_PROMPT = """\
 
 请严格遵循以下规则对图片中的文字进行识别与转录：
 
+【绝对禁令——违反即失败】
+以下字符必须原样保留，禁止任何形式的转换：
+• 数字：九/十/七/八/百/千/万/一/二/三/四/五/六 → 绝对不能改成 玖/拾/柒/捌/佰/仟/萬/壹/貳/叁/肆/伍/陸
+• 异体字：弍/弐 → 绝对不能改成 貳/贰
+• 简体字：如果原文就是简体（如"九兄"的"九"），必须保留"九"，不能改成"玖"
+
 【阅读顺序】
 - 古代契约通常为竖排书写，从右至左逐列阅读
 - 若存在多列，请从最右列开始，逐列向左转录
 
-【文字规范】
-- 保留所有繁体字、异体字、俗字，不要替换为现代简体字
-- 常见大写数字请原样保留：壹贰叁肆伍陆柒捌玖拾佰仟万
-- 计量单位请原样保留：亩、分、厘、毫、文、钱、两、升、斗
-- 常见契约专用词请原样保留：立契人、凭中人、代书人、知见人、画押、
-  花押、钤印、今将、情愿、出卖、出租、佃种、永远为业、恐口无凭、
-  立此契约、永不反悔、以上为据
+【文字规范——极其重要】
+- 你必须逐字照录图片上看到的原始字形，不得以任何方式转换为现代简体字
+- 以下为强制对照（左侧为必须输出的形式，右侧为绝对禁止输出的形式）：
+  · 寶（禁→宝）、號（禁→号）、錢（禁→钱）、銀（禁→银）、賣（禁→卖）
+  · 買（禁→买）、約（禁→约）、憑（禁→凭）、陸（禁→陆）、歲（禁→岁）
+  · 糧（禁→粮）、畝（禁→亩）、釐（禁→厘）、絲（禁→丝）、塵（禁→尘）
+  · 親（禁→亲）、中（保留）、說（禁→说）、合（保留）、筆（禁→笔）
+  · 歸（禁→归）、頭（禁→头）、爾（禁→尔）、處（禁→处）、從（禁→从）
+  · 與（禁→与）、書（禁→书）、見（禁→见）、聞（禁→闻）、關（禁→关）
+- 如果你不确定某个字的繁体写法，宁可保留你看到的字形，也不要自行简化
+- 常见契约专用词请原样保留：立契人、憑中人、代書人、知見人、畫押、
+  花押、鈐印、今將、情願、出賣、出租、佃種、永遠為業、恐口無憑、
+  立此契約、永不反悔、以上為據
 
-【破损/模糊处理】
+【人名/地名——同音字防范】
+- 古代人名用字有特定偏好，常见人名用字：峙、峯、嶽、崑、泰、坤、
+  坤、均、塹、垣、圻、堃、垚、培、城、堡、基、堂、廷、庭
+- 地名常见字：垸（湖北常见）、團、灣、嶺、坪、壩、溝、沖、畈、畈
+- 日期中的天干地支字须精确识别：甲乙丙丁戊己庚辛壬癸 / 子丑寅卯辰巳午未申酉戌亥
+- 特别注意区分：戊/戌/戍/戎、己/已/巳、田/由/甲/申/坤
+
+【破损/模糊/印章处理】
 - 确定可辨认的字符直接输出
 - 无法辨认的字用 □ 表示，连续多字用 □□□ 表示
-- 印章、花押、朱批等非正文内容用【印】【押】【朱批：…】标注
+- 被印章（红色朱印）覆盖的文字：如果能透过印章辨认则输出，否则用 □ 表示
+- 印章本身的文字用【印文：…】标注，花押用【押】标注
+- 朱批用【朱批：…】标注
 
 【输出格式】
 - 只输出转录的文字原文，不添加任何说明、注释或解释
 - 不以"图片中的文字是："等句子开头
 - 不添加原文中没有的标点符号（如句号、逗号等现代标点）
 - 保留原文段落换行，不合并或拆分段落
+- 数字串（如价格、面积）须保持连续，不得拆分
 """
 
 _OCR_USER_PROMPT = "请识别并转录图片中的全部文字。"
@@ -77,6 +99,17 @@ def _preprocess_image(image_path: str) -> str:
 
         img = img.convert("RGB")
 
+        # ①b 红色印章抑制（古代契约常见朱印覆盖文字）
+        # 将红色通道值降低，使红色印章文字与背景融合，减少对 OCR 的干扰
+        import numpy as np
+        img_array = np.array(img, dtype=np.float32)
+        r, g, b = img_array[:, :, 0], img_array[:, :, 1], img_array[:, :, 2]
+        # 检测红色区域：R 通道显著高于 G 和 B（印章的朱红色特征）
+        red_mask = (r > 150) & (r > g * 1.3) & (r > b * 1.3)
+        # 将红色区域的 R 通道值降低到与 G 通道接近，保留文字笔画
+        img_array[:, :, 0] = np.where(red_mask, np.minimum(r, g * 1.1), r)
+        img = PILImage.fromarray(img_array.astype(np.uint8))
+
         # ② 长边限制 3000px（兼顾 API 限制与传输效率）
         max_side = 3000
         w, h = img.size
@@ -84,20 +117,30 @@ def _preprocess_image(image_path: str) -> str:
             scale = max_side / max(w, h)
             img = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
 
-        # ③ 转灰度（去除纸张泛黄、墨迹褪色等色彩干扰）
+        # ②b Real-ESRGAN 超分辨率（仅在模型可用且图片模糊时启用）
+        upsampler = _init_esrgan()
+        if upsampler is not None and os.path.getsize(image_path) < 500_000:
+            try:
+                import numpy as np
+                img_array = np.array(img)[:, :, ::-1]
+                output, _ = upsampler.enhance(img_array, outscale=2)
+                img = PILImage.fromarray(output[:, :, ::-1])
+            except Exception as e:
+                print(f"Real-ESRGAN failed (using original): {e}")
+
+        # ③ 转灰度
         gray = img.convert("L")
 
-        # ④ 自适应对比度拉伸
-        # cutoff=0.5 去除最暗/最亮各 0.5% 极端像素后拉伸，自动适应不同图片条件
+        # ④ 自适应对比度拉伸（去除极端像素后拉伸）
         gray = ImageOps.autocontrast(gray, cutoff=0.5)
 
-        # ⑤ 轻微高斯模糊去噪（radius=0.5，比 MedianFilter(3) 温和，减少对笔画边缘的损伤）
+        # ⑤ 轻微高斯模糊去噪（radius=0.5，保留笔画细节的同时去除纸张纹理噪声）
         gray = gray.filter(ImageFilter.GaussianBlur(radius=0.5))
 
         # ⑥ 自适应锐化（UnsharpMask 只增强边缘区域，不影响平滑背景区域）
         gray = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
-        # ⑦ 转回 RGB（API 要求三通道输入）
+        # ⑧ 转回 RGB（API 要求三通道输入）
         img = gray.convert("RGB")
 
         # ⑧ 保存为 PNG 无损格式（避免 JPEG 压缩伪影干扰模型识别）
@@ -109,6 +152,44 @@ def _preprocess_image(image_path: str) -> str:
     except Exception as e:
         print(f"图像预处理失败（使用原图）: {e}")
         return image_path
+
+
+# ── Real-ESRGAN 超分辨率 ──────────────────────────────────────────────────────
+
+_esrgan_upsampler = None
+
+def _init_esrgan():
+    """初始化 Real-ESRGAN 超分辨率模型（懒加载，仅在需要时初始化一次）。"""
+    global _esrgan_upsampler
+    if _esrgan_upsampler is not None:
+        return _esrgan_upsampler
+    try:
+        import torch
+        from basicsr.archs.srvgg_arch import SRVGGNetCompact
+        from realesrgan import RealESRGANer
+
+        model_path = settings.REAL_ESRGAN_MODEL_PATH
+        if not os.path.exists(model_path):
+            print(f"Real-ESRGAN model not found: {model_path}")
+            return None
+
+        model = SRVGGNetCompact(
+            num_in_ch=3, num_out_ch=3, num_feat=64,
+            num_conv=32, upscale=4, act_type='prelu'
+        )
+        use_half = torch.cuda.is_available()
+        _esrgan_upsampler = RealESRGANer(
+            scale=4, model_path=model_path, model=model,
+            tile=800, tile_pad=10, pre_pad=0, half=use_half, gpu_id=None,
+        )
+        print(f"Real-ESRGAN initialized (half={use_half})")
+        return _esrgan_upsampler
+    except ImportError as e:
+        print(f"Real-ESRGAN not installed: {e}")
+        return None
+    except Exception as e:
+        print(f"Real-ESRGAN init failed: {e}")
+        return None
 
 
 # ── VL 输出清洗 ───────────────────────────────────────────────────────────────
@@ -150,6 +231,37 @@ def _clean_vl_output(text: str) -> str:
 
 # ── OCR 后校正 Pass ───────────────────────────────────────────────────────────
 
+# 简体→繁体映射（仅限契约文书中的通用文字，不含数字和异体字）
+# 注意：不转换数字（九/十/七/八/百/千/万等），因为图片中可能写的就是简体形式
+# 如"九兄"就是"九兄"，不强制转为"玖兄"；"弍拾柒"保留原写法不改为"貳拾柒"
+_TRADITIONAL_MAP = {
+    "宝": "寶", "号": "號", "钱": "錢", "银": "銀", "卖": "賣",
+    "买": "買", "约": "約", "凭": "憑", "陆": "陸", "岁": "歲",
+    "粮": "糧", "亩": "畝", "厘": "釐",
+    "丝": "絲", "亲": "親", "说": "說", "笔": "筆", "书": "書",
+    "见": "見", "归": "歸", "从": "從", "与": "與", "头": "頭",
+    "处": "處", "尔": "爾", "闻": "聞", "关": "關", "两": "兩",
+    "麦": "麥", "马": "馬", "鱼": "魚", "鸟": "鳥", "龙": "龍",
+    "华": "華", "门": "門", "风": "風", "凤": "鳳", "尽": "盡",
+    "层": "層", "学": "學", "对": "對", "导": "導", "实": "實",
+    "开": "開", "间": "間", "业": "業", "义": "義", "东": "東",
+    "团": "團", "湾": "灣", "岭": "嶺",
+    "坝": "壩", "沟": "溝",
+    "为": "為", "无": "無", "据": "據",
+}
+
+
+def _ensure_traditional_chinese(text: str) -> str:
+    """
+    最终保底：逐字检测并还原简体→繁体。
+    只处理明确的简体字（宝/号/钱/银等），不触碰数字和异体字。
+    """
+    result = []
+    for ch in text:
+        result.append(_TRADITIONAL_MAP.get(ch, ch))
+    return "".join(result)
+
+
 def _correct_ocr_text(raw_text: str) -> str:
     """
     使用 Qwen-Plus 对 OCR 原文做领域专项校正（从 Turbo 升级以获得更强语义理解）：
@@ -168,20 +280,24 @@ def _correct_ocr_text(raw_text: str) -> str:
         prompt = (
             "以下是对一份中国古代契约文书进行 OCR 识别后得到的原始文本。\n\n"
             "请根据上下文和古代契约文书的语言规律，对明显的 OCR 识别错误进行最小化校正。\n\n"
-            "【常见 OCR 误识别对照】\n"
-            "- 形近字：己/已/巳、戊/戌/戍/戎、土/士/壬、大/太/犬/夫、"
-            "日/曰/目、末/未、买/卖、田/由/甲/申、丙/两、干/于/千、"
-            "亩/畝、钱/銭、两/兩、契/楔、人/入、壹/壶、冬/终\n"
-            "- 数字混淆：壹/壶、贰/贰/弐、叁/参、伍/伍\n"
-            "- 断字/连字：一个字被误识为两个部件，或两个字被合为一个\n\n"
+            "【绝对禁令——违反即失败】\n"
+            "以下字符必须原样保留，禁止任何形式的转换或\"纠正\"：\n"
+            "• 数字：九/十/七/八/百/千/万/一/二/三/四/五/六 → 绝对不能改成 玖/拾/柒/捌/佰/仟/萬/壹/貳/叁/肆/伍/陸\n"
+            "• 异体字：弍/弐 → 绝对不能改成 貳/贰\n"
+            "• 简体字：如果原文就是简体（如\"九兄\"的\"九\"），必须保留\"九\"，不能改成\"玖\"\n"
+            "• 任何数字组合：\"十柒\"不能改成\"拾柒\"，\"九百\"不能改成\"玖佰\"\n\n"
+            "【可修正的错误——仅限以下类型】\n"
+            "1. 形近字误识别：己→已、戊→戌、土→士、大→太、日→曰、末→未、田→由\n"
+            "2. 同音人名误识别：如章峙三（非章兆三）\n"
+            "3. 天干地支误识别：如戊戌（须精确区分戊/戌/戍）\n"
+            "4. 断字/连字错误\n\n"
             "【校正规则】\n"
-            "1. 只修正明显的识别错误，不改动语义上可能正确的内容\n"
-            "2. 保留所有繁体字、异体字，不要简化为现代简体字\n"
-            "3. 保留 □ 占位符，不要擅自填充或删除\n"
-            "4. 保留原文的换行和段落结构\n"
-            "5. 不添加原文中没有的标点符号\n"
-            "6. 不添加任何注释、说明、前缀或后缀\n"
-            "7. 直接输出校正后的纯文本\n\n"
+            "1. 只修正上述\"可修正\"类型中的明确错误\n"
+            "2. 不确定的内容一律保留原样\n"
+            "3. 保留 □ 占位符\n"
+            "4. 保留原文换行和段落结构\n"
+            "5. 不添加标点、注释、说明\n"
+            "6. 直接输出校正后的纯文本\n\n"
             f"OCR 原始文本：\n{raw_text}"
         )
 
@@ -206,6 +322,9 @@ def _correct_ocr_text(raw_text: str) -> str:
                 '', corrected
             ).strip()
 
+            # 简体→繁体还原：只处理明确的简体字（宝/号/钱等），不触碰数字和异体字
+            corrected = _ensure_traditional_chinese(corrected)
+
             # 长度校验：校正后文本长度不应偏差太大，防止模型生成无关内容
             if corrected and 0.5 < len(corrected) / max(len(raw_text), 1) < 2.0:
                 return corrected
@@ -217,13 +336,110 @@ def _correct_ocr_text(raw_text: str) -> str:
         return raw_text
 
 
+# ── Multi-pass Ensemble OCR ──────────────────────────────────────────────────
+
+def _augment_image(img, num_variants=3):
+    """
+    生成多份图像变体，通过不同增强策略提高 OCR 集成效果。
+    策略包括：膨胀、高斯模糊、高斯噪声、缩放重采样。
+    """
+    import numpy as np
+    from PIL import Image as PILImage
+    augmented = []
+    rng = np.random.RandomState(42)
+    original_array = np.array(img)
+    for i in range(num_variants):
+        variant = original_array.copy().astype(np.float32)
+        strategy = i % 4
+        if strategy == 0:
+            from PIL import ImageFilter
+            dilated = img.filter(ImageFilter.MaxFilter(size=3))
+            variant = np.array(dilated).astype(np.float32)
+        elif strategy == 1:
+            from scipy.ndimage import gaussian_filter
+            sigma = 0.8 + rng.random() * 0.4
+            variant = gaussian_filter(variant, sigma=[sigma, sigma, 0])
+        elif strategy == 2:
+            sigma = 2.0 + rng.random() * 3.0
+            noise = rng.normal(0, sigma, variant.shape)
+            variant = np.clip(variant + noise, 0, 255)
+        elif strategy == 3:
+            scale = 0.85 + rng.random() * 0.1
+            h, w = variant.shape[:2]
+            small = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
+            variant = np.array(small.resize((w, h), PILImage.LANCZOS)).astype(np.float32)
+        augmented.append(PILImage.fromarray(variant.astype(np.uint8)))
+    return augmented
+
+
+def _nw_consensus(texts):
+    """
+    使用 Needleman-Wunsch 全局对齐算法，对多份 OCR 文本进行投票共识。
+    逐轮合并：取第一份文本为基线，依次与后续文本对齐并合并，
+    遇到 gap 时取另一方的字符，非 gap 时取多数投票（首方优先）。
+    """
+    from sequence_align.pairwise import needleman_wunsch
+    if not texts:
+        return ""
+    if len(texts) == 1:
+        return texts[0]
+    consensus = list(texts[0])
+    for i in range(1, len(texts)):
+        aligned_a, aligned_b = needleman_wunsch(
+            consensus, list(texts[i]), "_",
+            match_score=2.0, mismatch_score=-1.0, indel_score=-1.0,
+        )
+        new_consensus = []
+        for a, b in zip(aligned_a, aligned_b):
+            if a == "_":
+                new_consensus.append(b)
+            elif b == "_":
+                new_consensus.append(a)
+            else:
+                new_consensus.append(a)
+        consensus = new_consensus
+    return "".join(c for c in consensus if c != "_")
+
+
+def _ensemble_ocr(img, num_passes=None):
+    """
+    多轮 OCR 集成：对图像生成多个增强变体，每个变体独立 OCR，
+    最后用 Needleman-Wunsch 共识算法合并结果，提高识别准确率。
+    跳过返回 Error 的 API 调用，全部失败时回退到单次 OCR。
+    """
+    if num_passes is None:
+        num_passes = settings.ENSEMBLE_PASSES
+    variants = _augment_image(img, num_variants=num_passes)
+    import tempfile, os
+    results = []
+    for i, variant in enumerate(variants):
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            variant.save(f.name, "PNG")
+            try:
+                text = _run_api_predict(f.name)
+                if text and not text.startswith("Error:"):
+                    results.append(text)
+            except Exception as e:
+                print(f"Ensemble pass {i+1} error: {e}")
+            finally:
+                try:
+                    os.remove(f.name)
+                except OSError:
+                    pass
+    if not results:
+        return _run_api_predict("")
+    if len(results) == 1:
+        return results[0]
+    return _nw_consensus(results)
+
+
 # ── 主识别函数 ────────────────────────────────────────────────────────────────
 
-def _run_api_predict(input_file: str, max_retries: int = 3) -> str:
+def _run_api_predict(input_file: str, max_retries: int = 5) -> str:
     """
-    使用 DashScope Qwen-VL-Max 对古代契约文书图片进行 OCR，
+    使用 DashScope Qwen-VL-OCR-Latest 对古代契约文书图片进行 OCR，
     并通过专项 Prompt 引导模型输出高质量转录结果。
-    内置重试机制（指数退避），应对 API 瞬时故障。
+    内置重试机制（指数退避 + 随机抖动），应对 API 瞬时故障和 SSL 连接中断。
     """
     try:
         from dashscope import MultiModalConversation
@@ -238,14 +454,10 @@ def _run_api_predict(input_file: str, max_retries: int = 3) -> str:
 
         messages = [
             {
-                "role": "system",
-                "content": [{"text": _OCR_SYSTEM_PROMPT}],
-            },
-            {
                 "role": "user",
                 "content": [
-                    {"image": local_file_path},
-                    {"text": _OCR_USER_PROMPT},
+                    {"image": local_file_path, "min_pixels": 3072, "max_pixels": 8388608},
+                    {"text": f"{_OCR_SYSTEM_PROMPT}\n\n{_OCR_USER_PROMPT}"},
                 ],
             },
         ]
@@ -254,9 +466,11 @@ def _run_api_predict(input_file: str, max_retries: int = 3) -> str:
         for attempt in range(max_retries):
             try:
                 response = MultiModalConversation.call(
-                    model="qwen-vl-max",
+                    model="qwen-vl-ocr-latest",
                     messages=messages,
-                    top_p=0.1,
+                    temperature=0.01,
+                    top_p=0.001,
+                    top_k=1,
                 )
 
                 if response.status_code == 200:
@@ -273,7 +487,10 @@ def _run_api_predict(input_file: str, max_retries: int = 3) -> str:
                 print(f"API OCR attempt {attempt + 1}/{max_retries} failed: {e}")
 
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                import random
+                backoff = min(2 ** attempt, 16)
+                jitter = random.uniform(0, backoff * 0.5)
+                time.sleep(backoff + jitter)
 
         return f"Error: {last_error}"
 
@@ -321,7 +538,12 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             enhanced_file = _preprocess_image(input_file)
 
             # ② Qwen-VL-Max OCR（领域化 Prompt）
-            extracted_text = _run_api_predict(enhanced_file)
+            if settings.ENSEMBLE_PASSES >= 2:
+                from PIL import Image as PILImage
+                ocr_img = PILImage.open(enhanced_file)
+                extracted_text = _ensemble_ocr(ocr_img)
+            else:
+                extracted_text = _run_api_predict(enhanced_file)
 
             if not extracted_text or extracted_text.startswith("Error:"):
                 extracted_text = extracted_text or "未能识别到文字。"
