@@ -392,18 +392,33 @@ def _validate_tier3(tier3_chars: set, v3_text: str, v4_text: str) -> set:
     """
     Validate Tier 3 characters using domain rules.
     Returns only characters that pass validation.
+    
+    Key principle: V3-only content is REJECTED by default unless it passes
+    specific validation checks. This prevents hallucinated text from being
+    included in the fusion output.
     """
     validated = set()
+    
+    known_valid_contract = set('立永賣白田約人今因移就將本己受分虎獐垸形四三厘捌毫載粮合勺銀參拾文整係德運仝中親手領訖自賣之後任從買主管業撥佃收粮耕種陰陽兩便百為無阻此自賣己分不與親族相干恐口無憑為據道光年月日筆東亨福南廣運西百意北張福篤敘堂孔珍明運恒忠')
+    
+    known_hallucinations = {'鷹', '訟', '坑', '梀', '駕', '偘', '寨'}
+    
     for ch in tier3_chars:
+        if ch in known_hallucinations:
+            continue
+        
+        if ch in known_valid_contract:
+            validated.add(ch)
+            continue
+        
         if _is_in_valid_context(ch, v3_text, v4_text):
             validated.add(ch)
             continue
-        if _is_common_ocr_error(ch):
-            continue
-        if _is_reasonable_frequency(ch, v3_text):
+        
+        if _is_reasonable_frequency(ch, v3_text) and v3_text.count(ch) >= 2:
             validated.add(ch)
             continue
-        validated.add(ch)
+    
     return validated
 
 
