@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     ENSEMBLE_PASSES: int = 1
     ENSEMBLE_DOWNSCALE: float = 0.85
     ENSEMBLE_NOISE_SIGMA: float = 3.0
+    FUSION_ENABLED: bool = True
 
     @property
     def REDIS_URL(self) -> str:

@@ -97,6 +97,7 @@ class OcrResult(Base):
     image_id: Mapped[int] = mapped_column(Integer, ForeignKey("image.id", ondelete="CASCADE"), index=True)
     raw_text: Mapped[str] = mapped_column(String)
     status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
+    confidence: Mapped[float] = mapped_column(default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系

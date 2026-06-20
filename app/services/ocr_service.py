@@ -352,6 +352,138 @@ def _apply_domain_corrections(text: str) -> str:
     return text
 
 
+# ── V3+V4 融合 OCR ────────────────────────────────────────────────────────────
+
+def _normalize_for_comparison(text: str) -> set:
+    """Normalize text for character-level comparison."""
+    return set(re.sub(r'[\s□■]', '', text))
+
+
+def _is_in_valid_context(ch: str, v3_text: str, v4_text: str) -> bool:
+    """
+    Check if character appears in a valid context.
+    Known valid phrases in ancient contracts.
+    """
+    valid_phrases = ['篤敘堂', '恐口無憑', '立此為據', '陰陽兩便', '百為無阻',
+                     '永遠為業', '立永賣', '請憑親中', '其田四止']
+    for phrase in valid_phrases:
+        if ch in phrase and phrase in v3_text:
+            return True
+    return False
+
+
+def _is_common_ocr_error(ch: str) -> bool:
+    """Check if character is a known OCR error for ancient documents."""
+    common_errors = {'鷹', '訟', '坑'}
+    return ch in common_errors
+
+
+def _is_reasonable_frequency(ch: str, text: str) -> bool:
+    """Check if character frequency is reasonable for this document type."""
+    common_chars = set('立賣買田約錢銀兩畝分厘毫糧中人筆')
+    if ch in common_chars:
+        return True
+    if text.count(ch) >= 2:
+        return True
+    return False
+
+
+def _validate_tier3(tier3_chars: set, v3_text: str, v4_text: str) -> set:
+    """
+    Validate Tier 3 characters using domain rules.
+    Returns only characters that pass validation.
+    """
+    validated = set()
+    for ch in tier3_chars:
+        if _is_in_valid_context(ch, v3_text, v4_text):
+            validated.add(ch)
+            continue
+        if _is_common_ocr_error(ch):
+            continue
+        if _is_reasonable_frequency(ch, v3_text):
+            validated.add(ch)
+            continue
+        validated.add(ch)
+    return validated
+
+
+def _fuse_v3_v4(v3_text: str, v4_text: str) -> tuple:
+    """
+    Tiered fusion of v3 and v4 OCR outputs using sequence alignment.
+    
+    Strategy:
+    - Use Needleman-Wunsch to align v3 and v4 outputs
+    - Where both agree: keep (high confidence)
+    - Where only v4 has content: keep (v4 is precise)
+    - Where only v3 has content: apply domain validation
+    
+    Returns: (fused_text, confidence_score)
+    """
+    if not v3_text and not v4_text:
+        return "", 0.0
+    if not v3_text:
+        return v4_text, 1.0
+    if not v4_text:
+        return v3_text, 0.0
+    
+    from sequence_align.pairwise import needleman_wunsch
+    
+    v3_clean = "".join(v3_text.split())
+    v4_clean = "".join(v4_text.split())
+    
+    aligned_v3, aligned_v4 = needleman_wunsch(
+        list(v3_clean), list(v4_clean), "_",
+        match_score=2.0, mismatch_score=-1.0, indel_score=-1.0,
+    )
+    
+    fused_chars = []
+    agree_count = 0
+    v4_only_count = 0
+    v3_only_count = 0
+    v3_only_validated = 0
+    
+    i = 0
+    while i < len(aligned_v3):
+        a = aligned_v3[i]
+        b = aligned_v4[i]
+        
+        if a == "_" and b == "_":
+            i += 1
+            continue
+        elif a == "_":
+            fused_chars.append(b)
+            v4_only_count += 1
+        elif b == "_":
+            if _is_in_valid_context(a, v3_text, v4_text) or _is_reasonable_frequency(a, v3_text):
+                fused_chars.append(a)
+                v3_only_count += 1
+                v3_only_validated += 1
+            elif not _is_common_ocr_error(a):
+                fused_chars.append(a)
+                v3_only_count += 1
+                v3_only_validated += 1
+        else:
+            fused_chars.append(a)
+            agree_count += 1
+        
+        i += 1
+    
+    total = agree_count + v4_only_count + v3_only_validated
+    confidence = (agree_count + v4_only_count) / total if total > 0 else 0.0
+    
+    return "".join(fused_chars), confidence
+
+
+def _run_api_predict_v3(input_file: str, max_retries: int = 5) -> str:
+    """v3 model (qwen-vl-max) - high recall, low precision."""
+    return _run_api_predict(input_file, model="qwen-vl-max", max_retries=max_retries)
+
+
+def _run_api_predict_v4(input_file: str, max_retries: int = 5) -> str:
+    """v4 model (qwen-vl-ocr-latest) - high precision, low recall."""
+    return _run_api_predict(input_file, model="qwen-vl-ocr-latest", max_retries=max_retries)
+
+
 def _correct_ocr_text(raw_text: str) -> str:
     """
     使用 Qwen-Plus 对 OCR 原文做领域专项校正（从 Turbo 升级以获得更强语义理解）：
@@ -528,11 +660,17 @@ def _ensemble_ocr(img, num_passes=None):
 
 # ── 主识别函数 ────────────────────────────────────────────────────────────────
 
-def _run_api_predict(input_file: str, max_retries: int = 5) -> str:
+def _run_api_predict(input_file: str, model: str = "qwen-vl-max", max_retries: int = 5) -> str:
     """
-    使用 DashScope Qwen-VL-Max 对古代契约文书图片进行 OCR，
-    并通过专项 Prompt 引导模型输出高质量转录结果。
-    内置重试机制（指数退避 + 随机抖动），应对 API 瞬时故障和 SSL 连接中断。
+    使用 DashScope Qwen-VL 模型对古代契约文书图片进行 OCR。
+    
+    Args:
+        input_file: Image file path
+        model: Model name ("qwen-vl-max" for v3, "qwen-vl-ocr-latest" for v4)
+        max_retries: Maximum number of retries
+    
+    Returns:
+        OCR text or error message
     """
     try:
         from dashscope import MultiModalConversation
@@ -563,7 +701,7 @@ def _run_api_predict(input_file: str, max_retries: int = 5) -> str:
         for attempt in range(max_retries):
             try:
                 response = MultiModalConversation.call(
-                    model="qwen-vl-max",
+                    model=model,
                     messages=messages,
                     top_p=0.1,
                 )
@@ -632,13 +770,32 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             # ① 图像预处理（增强对比度/锐化，提升模型识别率）
             enhanced_file = _preprocess_image(input_file)
 
-            # ② Qwen-VL-Max OCR（领域化 Prompt）
-            if settings.ENSEMBLE_PASSES >= 2:
-                from PIL import Image as PILImage
-                ocr_img = PILImage.open(enhanced_file)
-                extracted_text = _ensemble_ocr(ocr_img)
+            # ② V3+V4 融合 OCR（并行调用两个模型，融合结果）
+            if settings.FUSION_ENABLED:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    future_v3 = executor.submit(_run_api_predict_v3, enhanced_file)
+                    future_v4 = executor.submit(_run_api_predict_v4, enhanced_file)
+                    
+                    v3_text = future_v3.result()
+                    v4_text = future_v4.result()
+                
+                extracted_text, confidence = _fuse_v3_v4(v3_text, v4_text)
+                logger.info("ocr_fusion_completed", extra={
+                    "v3_len": len(v3_text) if v3_text else 0,
+                    "v4_len": len(v4_text) if v4_text else 0,
+                    "fused_len": len(extracted_text) if extracted_text else 0,
+                    "confidence": confidence,
+                })
             else:
-                extracted_text = _run_api_predict(enhanced_file)
+                # 回退到单模型模式
+                if settings.ENSEMBLE_PASSES >= 2:
+                    from PIL import Image as PILImage
+                    ocr_img = PILImage.open(enhanced_file)
+                    extracted_text = _ensemble_ocr(ocr_img)
+                else:
+                    extracted_text = _run_api_predict(enhanced_file)
+                confidence = 0.0
 
             if not extracted_text or extracted_text.startswith("Error:"):
                 extracted_text = extracted_text or "未能识别到文字。"
@@ -650,6 +807,7 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             cleaned_text = _correct_ocr_text(cleaned_text)
 
             ocr_result.raw_text = cleaned_text
+            ocr_result.confidence = confidence
             ocr_result.status = OcrStatus.DONE
             db.commit()
 
