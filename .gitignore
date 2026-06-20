@@ -229,3 +229,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Model weights
+weights/
+*.pth
+*.pt
+*.onnx
+
+# Evaluation reports
+ocr_eval_report_*.json
+old_ocr_results.json
+
+# Temp enhanced images
+*_ocr_enhanced.png

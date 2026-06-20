@@ -36,7 +36,13 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
-    
+
+    # OCR Optimization Settings
+    REAL_ESRGAN_MODEL_PATH: str = "weights/realesr-general-x4v3.pth"
+    ENSEMBLE_PASSES: int = 1
+    ENSEMBLE_DOWNSCALE: float = 0.85
+    ENSEMBLE_NOISE_SIGMA: float = 3.0
+
     @property
     def REDIS_URL(self) -> str:
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
