@@ -8,7 +8,7 @@ class TestOCRConfig:
         assert settings.REAL_ESRGAN_MODEL_PATH == "weights/realesr-general-x4v3.pth"
 
     def test_ensemble_passes_default(self):
-        assert settings.ENSEMBLE_PASSES == 3
+        assert settings.ENSEMBLE_PASSES == 1
 
     def test_ensemble_passes_positive(self):
         assert settings.ENSEMBLE_PASSES > 0

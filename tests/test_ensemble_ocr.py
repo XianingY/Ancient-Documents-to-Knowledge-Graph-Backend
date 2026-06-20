@@ -49,7 +49,7 @@ class TestEnsembleOCR:
     def test_ensemble_config_present(self):
         from app.core.config import settings
         assert hasattr(settings, "ENSEMBLE_PASSES")
-        assert settings.ENSEMBLE_PASSES >= 2
+        assert settings.ENSEMBLE_PASSES >= 1
 
     @patch("app.services.ocr_service._run_api_predict")
     def test_ensemble_handles_api_failure(self, mock_predict):

@@ -116,6 +116,8 @@ async def upload_image(
         raise HTTPException(status_code=400, detail="文件为空")
 
     original_name = os.path.splitext(image.filename or "upload")[0]
+    # Sanitize: strip path traversal chars and null bytes
+    original_name = re.sub(r'[/\\:\x00]', '_', original_name)
     unique_filename = f"{original_name}_{uuid.uuid4().hex[:8]}{ext}"
     file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
 

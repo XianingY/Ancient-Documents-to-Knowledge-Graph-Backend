@@ -96,7 +96,7 @@ class OcrResult(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     image_id: Mapped[int] = mapped_column(Integer, ForeignKey("image.id", ondelete="CASCADE"), index=True)
     raw_text: Mapped[str] = mapped_column(String)
-    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING)
+    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系
@@ -111,7 +111,7 @@ class StructuredResult(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     ocr_result_id: Mapped[int] = mapped_column(Integer, ForeignKey("ocr_result.id", ondelete="CASCADE"), index=True)
     content: Mapped[str] = mapped_column(String)  # JSON格式
-    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING)
+    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系
@@ -127,7 +127,7 @@ class RelationGraph(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     structured_result_id: Mapped[int] = mapped_column(Integer, ForeignKey("structured_result.id", ondelete="CASCADE"), index=True)
     content: Mapped[str] = mapped_column(String)  # JSON格式
-    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING)
+    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系
@@ -140,7 +140,7 @@ class MultiTask(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("user.id", ondelete="CASCADE"), index=True)
-    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING)
+    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系
@@ -156,7 +156,7 @@ class MultiRelationGraph(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     multi_task_id: Mapped[int] = mapped_column(Integer, ForeignKey("multi_task.id", ondelete="CASCADE"), index=True)
     content: Mapped[str] = mapped_column(String)  # JSON格式
-    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING)
+    status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系

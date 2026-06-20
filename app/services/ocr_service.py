@@ -6,6 +6,9 @@ import base64
 from sqlalchemy.orm import Session
 from database import SessionLocal, Image, OcrResult, OcrStatus
 from app.core.config import settings
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ── OCR 专用 Prompt ───────────────────────────────────────────────────────────
 #
@@ -99,23 +102,20 @@ def _preprocess_image(image_path: str) -> str:
 
         img = img.convert("RGB")
 
-        # ①b 红色印章抑制（古代契约常见朱印覆盖文字）
-        # 将红色通道值降低，使红色印章文字与背景融合，减少对 OCR 的干扰
-        import numpy as np
-        img_array = np.array(img, dtype=np.float32)
-        r, g, b = img_array[:, :, 0], img_array[:, :, 1], img_array[:, :, 2]
-        # 检测红色区域：R 通道显著高于 G 和 B（印章的朱红色特征）
-        red_mask = (r > 150) & (r > g * 1.3) & (r > b * 1.3)
-        # 将红色区域的 R 通道值降低到与 G 通道接近，保留文字笔画
-        img_array[:, :, 0] = np.where(red_mask, np.minimum(r, g * 1.1), r)
-        img = PILImage.fromarray(img_array.astype(np.uint8))
-
-        # ② 长边限制 3000px（兼顾 API 限制与传输效率）
+        # ② 长边限制 3000px — resize BEFORE numpy to reduce memory (~137MB → ~15MB)
         max_side = 3000
         w, h = img.size
         if max(w, h) > max_side:
             scale = max_side / max(w, h)
             img = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
+
+        # ①b 红色印章抑制（古代契约常见朱印覆盖文字）
+        import numpy as np
+        img_array = np.array(img, dtype=np.float32)
+        r, g, b = img_array[:, :, 0], img_array[:, :, 1], img_array[:, :, 2]
+        red_mask = (r > 150) & (r > g * 1.3) & (r > b * 1.3)
+        img_array[:, :, 0] = np.where(red_mask, np.minimum(r, g * 1.1), r)
+        img = PILImage.fromarray(img_array.astype(np.uint8))
 
         # ②b Real-ESRGAN 超分辨率（仅在模型可用且图片模糊时启用）
         upsampler = _init_esrgan()
@@ -126,7 +126,7 @@ def _preprocess_image(image_path: str) -> str:
                 output, _ = upsampler.enhance(img_array, outscale=2)
                 img = PILImage.fromarray(output[:, :, ::-1])
             except Exception as e:
-                print(f"Real-ESRGAN failed (using original): {e}")
+                logger.warning("esrgan_enhance_failed", extra={"error": str(e)})
 
         # ③ 转灰度
         gray = img.convert("L")
@@ -150,7 +150,7 @@ def _preprocess_image(image_path: str) -> str:
         return tmp_path
 
     except Exception as e:
-        print(f"图像预处理失败（使用原图）: {e}")
+        logger.warning("image_preprocess_failed", extra={"error": str(e)})
         return image_path
 
 
@@ -170,7 +170,7 @@ def _init_esrgan():
 
         model_path = settings.REAL_ESRGAN_MODEL_PATH
         if not os.path.exists(model_path):
-            print(f"Real-ESRGAN model not found: {model_path}")
+            logger.warning("esrgan_model_not_found", extra={"path": model_path})
             return None
 
         model = SRVGGNetCompact(
@@ -182,13 +182,13 @@ def _init_esrgan():
             scale=4, model_path=model_path, model=model,
             tile=800, tile_pad=10, pre_pad=0, half=use_half, gpu_id=None,
         )
-        print(f"Real-ESRGAN initialized (half={use_half})")
+        logger.info("esrgan_initialized", extra={"half": use_half})
         return _esrgan_upsampler
     except ImportError as e:
-        print(f"Real-ESRGAN not installed: {e}")
+        logger.warning("esrgan_not_installed", extra={"error": str(e)})
         return None
     except Exception as e:
-        print(f"Real-ESRGAN init failed: {e}")
+        logger.error("esrgan_init_failed", extra={"error": str(e)})
         return None
 
 
@@ -332,7 +332,7 @@ def _correct_ocr_text(raw_text: str) -> str:
         return raw_text
 
     except Exception as e:
-        print(f"OCR 后校正失败（使用原文）: {e}")
+        logger.error("ocr_post_correct_failed", extra={"error": str(e)})
         return raw_text
 
 
@@ -420,7 +420,7 @@ def _ensemble_ocr(img, num_passes=None):
                 if text and not text.startswith("Error:"):
                     results.append(text)
             except Exception as e:
-                print(f"Ensemble pass {i+1} error: {e}")
+                logger.warning("ensemble_pass_error", extra={"pass": i + 1, "error": str(e)})
             finally:
                 try:
                     os.remove(f.name)
@@ -481,10 +481,10 @@ def _run_api_predict(input_file: str, max_retries: int = 5) -> str:
                     return ""
                 else:
                     last_error = f"API Error: {response.code} - {response.message}"
-                    print(f"DashScope API Error (attempt {attempt + 1}/{max_retries}): {response.code} - {response.message}")
+                    logger.warning("dashscope_api_error", extra={"attempt": attempt + 1, "max_retries": max_retries, "code": response.code, "message": response.message})
             except Exception as e:
                 last_error = str(e)
-                print(f"API OCR attempt {attempt + 1}/{max_retries} failed: {e}")
+                logger.warning("api_ocr_attempt_failed", extra={"attempt": attempt + 1, "max_retries": max_retries, "error": str(e)})
 
             if attempt < max_retries - 1:
                 import random
@@ -495,7 +495,7 @@ def _run_api_predict(input_file: str, max_retries: int = 5) -> str:
         return f"Error: {last_error}"
 
     except Exception as e:
-        print(f"API OCR execution failed: {e}")
+        logger.error("api_ocr_execution_failed", extra={"error": str(e)})
         return f"Error: {str(e)}"
 
 def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
@@ -514,13 +514,13 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
         image = db.query(Image).filter(Image.id == image_id).first()
 
         if image is None:
-            print(f"错误：未找到图片记录 -> {image_id}")
+            logger.error("image_record_not_found", extra={"image_id": image_id})
             return False
 
         input_file = str(image.path)
 
         if not os.path.exists(input_file):
-            print(f"错误：图片文件不存在 -> {input_file}")
+            logger.error("image_file_not_exist", extra={"path": input_file})
             return False
 
         enhanced_file = input_file  # 预处理后的临时文件路径
@@ -569,7 +569,7 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             if 'ocr_result' in locals():
                 ocr_result.status = OcrStatus.FAILED
                 db.commit()
-            print(f"OCR处理过程中发生错误 -> {e}")
+            logger.error("ocr_processing_error", extra={"error": str(e)})
             return False
 
         finally:
@@ -616,9 +616,9 @@ def _index_ocr_to_chroma(ocr_result_id: int, text: str, image) -> None:
             embedding=embedding,
             metadata=metadata,
         )
-        print(f"Image {image.id} OCR indexed to ChromaDB (doc_id=image_{image.id}).")
+        logger.info("ocr_indexed_to_chromadb", extra={"image_id": image.id})
     except Exception as e:
-        print(f"ChromaDB OCR indexing failed (non-fatal): {e}")
+        logger.warning("chromadb_ocr_indexing_failed", extra={"error": str(e)})
 
 
 async def ocr_image_by_id_async(image_id: int, db: Session = None) -> bool:

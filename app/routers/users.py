@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from collections import defaultdict
@@ -186,16 +187,25 @@ async def get_user_multi_tasks(
                     preview_map[mt_id].append(image_id)
 
     items = []
-    for task in multi_tasks:
-        doc_count = (
-            db.query(MultiTaskStructuredResult)
-            .filter(MultiTaskStructuredResult.multi_task_id == task.id)
-            .count()
+    task_ids = [task.id for task in multi_tasks]
+    doc_counts = {}
+    if task_ids:
+        count_rows = (
+            db.query(
+                MultiTaskStructuredResult.multi_task_id,
+                func.count(MultiTaskStructuredResult.id).label("cnt")
+            )
+            .filter(MultiTaskStructuredResult.multi_task_id.in_(task_ids))
+            .group_by(MultiTaskStructuredResult.multi_task_id)
+            .all()
         )
+        doc_counts = {row.multi_task_id: row.cnt for row in count_rows}
+
+    for task in multi_tasks:
         items.append({
             "id": task.id,
             "status": task.status.value,
-            "doc_count": doc_count,
+            "doc_count": doc_counts.get(task.id, 0),
             "created_at": task.created_at.isoformat(),
             "preview_image_ids": preview_map[task.id],
         })

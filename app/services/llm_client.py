@@ -9,6 +9,9 @@ from typing import Any, Dict, List
 from fastapi.concurrency import run_in_threadpool
 
 from app.core.config import settings
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 try:
     import dashscope
@@ -135,7 +138,7 @@ def call_structure_llm_sync(text: str) -> Dict[str, Any]:
             if key in extracted:
                 result[key] = extracted[key]
     except Exception as e:
-        print(f"[llm_client] 结构化提取失败: {e}")
+        logger.error("structure_extraction_failed", extra={"error": str(e)})
 
     # ── Pass 2：白话文译文 ────────────────────────────────────
     try:
@@ -146,7 +149,7 @@ def call_structure_llm_sync(text: str) -> Dict[str, Any]:
         )
         result["Translation"] = translation
     except Exception as e:
-        print(f"[llm_client] 译文生成失败: {e}")
+        logger.error("translation_generation_failed", extra={"error": str(e)})
         result["Translation"] = "译文生成失败，请重新分析。"
 
     return result
@@ -364,9 +367,9 @@ def call_insights_llm_sync(statistics: Dict[str, Any], parsed_datas: List[Dict])
         if response.status_code == 200:
             content = response.output.choices[0].message.content.strip()
             return content if content else _generate_fallback_insights(statistics)
-        print(f"LLM洞察生成失败: {response.code} - {response.message}")
+        logger.warning("llm_insights_generation_failed", extra={"code": response.code, "message": response.message})
     except Exception as e:
-        print(f"LLM洞察生成异常: {e}")
+        logger.error("llm_insights_exception", extra={"error": str(e)})
     return _generate_fallback_insights(statistics)
 
 
