@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.services.ocr.metrics import char_level_metrics
+from app.services.ocr.metrics import aggregate_char_metrics, char_metric_modes
 from database import Image, OcrResult, OcrStatus, SessionLocal
 
 
@@ -39,7 +39,7 @@ def main() -> None:
 
         results = []
         for key, (ocr_result, image) in latest.items():
-            metrics = char_level_metrics(
+            metric_modes = char_metric_modes(
                 ocr_result.raw_text or "",
                 ground_truth[key]["body"],
             )
@@ -49,7 +49,8 @@ def main() -> None:
                 "filename": image.filename,
                 "ocr_result_id": ocr_result.id,
                 "engine": getattr(ocr_result, "engine", None),
-                "metrics": metrics,
+                "metrics": metric_modes["content"],
+                "metric_modes": metric_modes,
             })
     finally:
         db.close()
@@ -59,27 +60,24 @@ def main() -> None:
         return
 
     results.sort(key=lambda item: item["metrics"]["f1"], reverse=True)
-    total_gt = sum(item["metrics"]["gt_len"] for item in results)
-    total_pred = sum(item["metrics"]["pred_len"] for item in results)
-    total_lcs = sum(item["metrics"]["lcs_len"] for item in results)
-    total_edits = sum(item["metrics"]["edit_distance"] for item in results)
-    total_insertions = sum(item["metrics"]["insertions"] for item in results)
-    total_substitutions = sum(
-        item["metrics"]["substitutions"] for item in results
-    )
-    precision = total_lcs / max(total_pred, 1)
-    recall = total_lcs / max(total_gt, 1)
+    summaries = {
+        mode: aggregate_char_metrics([
+            item["metric_modes"][mode] for item in results
+        ])
+        for mode in ("raw", "faithful", "content")
+    }
 
     print(f"Matched latest OCR results: {len(results)}")
-    print(f"Micro precision: {precision:.1%}")
-    print(f"Micro recall:    {recall:.1%}")
-    print(f"Micro F1:        {2 * precision * recall / max(precision + recall, 1e-10):.1%}")
-    print(f"Micro CER:       {total_edits / max(total_gt, 1):.1%}")
-    print(f"Extra rate:      {total_insertions / max(total_pred, 1):.1%}")
-    print(
-        "Wrong+extra:     "
-        f"{(total_insertions + total_substitutions) / max(total_pred, 1):.1%}"
-    )
+    for mode in ("content", "faithful", "raw"):
+        summary = summaries[mode]
+        print(
+            f"{mode.title():8s} P={summary['overall_precision']:.1%} "
+            f"R={summary['overall_recall']:.1%} "
+            f"F1={summary['overall_f1']:.1%} "
+            f"CER={summary['overall_cer']:.1%} "
+            f"extra={summary['overall_extra_hallucination_rate']:.1%} "
+            f"wrong+extra={summary['overall_fabricated_char_rate']:.1%}"
+        )
     print("\nBest 10")
     for item in results[:10]:
         metrics = item["metrics"]
