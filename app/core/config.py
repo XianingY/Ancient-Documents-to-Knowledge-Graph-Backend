@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     OCR_RECOGNITION_BATCH_SIZE: int = 16
     OCR_CONSENSUS_MIN_SCORE: float = 0.45
     OCR_CONSENSUS_MIN_SIMILARITY: float = 0.40
+    OCR_CHAR_RESCUE_ENABLED: bool = True
+    OCR_CHAR_RESCUE_USE_TINY: bool = True
+    OCR_CHAR_RESCUE_MIN_SCORE: float = 0.45
+    OCR_CHAR_RESCUE_MIN_LINE_CONFIDENCE: float = 0.70
+    OCR_CHAR_RESCUE_MAX_LINE_CHARS: int = 48
 
     @property
     def REDIS_URL(self) -> str:

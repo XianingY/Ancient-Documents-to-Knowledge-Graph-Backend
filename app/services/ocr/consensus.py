@@ -74,6 +74,87 @@ def agreement_text(primary: str, verifier: str) -> tuple[str, float]:
     return text, matcher.ratio()
 
 
+def _char_rescue(medium: dict[str, Any]) -> tuple[str, float, float]:
+    text = _clean_text(str(medium.get("char_rescue_text", "")))
+    if not text:
+        return "", 0.0, 0.0
+    visible_count = len(text.replace("□", ""))
+    if not visible_count:
+        return "", 0.0, 0.0
+    confidence = float(medium.get("char_rescue_confidence", 0.0) or 0.0)
+    visible_ratio = float(medium.get("char_rescue_visible_ratio", 0.0) or 0.0)
+    return text, confidence, visible_ratio
+
+
+def _has_visible_chars(text: str) -> bool:
+    return bool(text and text.replace("□", ""))
+
+
+def _is_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return True
+    position = 0
+    for char in haystack:
+        if char == needle[position]:
+            position += 1
+            if position == len(needle):
+                return True
+    return False
+
+
+def _agreement_with_medium(medium_text: str, rescue_text: str) -> str:
+    if len(medium_text) == len(rescue_text):
+        return "".join(
+            medium_char if medium_char == rescue_char else "□"
+            for medium_char, rescue_char in zip(medium_text, rescue_text)
+        )
+    text, _ = agreement_text(medium_text, rescue_text)
+    return text
+
+
+def _safe_char_rescue_text(
+    medium_text: str,
+    small_text: str,
+    rescue_text: str,
+    rescue_confidence: float,
+    reasons: list[str],
+) -> str:
+    if (
+        not rescue_text
+        or rescue_confidence < settings.OCR_CHAR_RESCUE_MIN_LINE_CONFIDENCE
+    ):
+        return ""
+
+    reason_text = " ".join(reasons)
+    if (
+        "uncertain:low_model_score" in reason_text
+        or "uncertain:missing_verifier" in reason_text
+    ):
+        text = _agreement_with_medium(medium_text, rescue_text)
+        if len(text) < 2 or len(text) > 4 or "□" in text:
+            return ""
+        return text
+
+    if "uncertain:short_or_role_line_disagreement" in reason_text:
+        max_len = max(len(medium_text), len(small_text), len(rescue_text))
+        if max_len > 4:
+            return ""
+        if small_text and len(medium_text) == len(small_text):
+            text, similarity = agreement_text(medium_text, small_text)
+            return text if similarity >= 0.3 else ""
+
+        if (
+            not small_text
+            or _is_subsequence(small_text, medium_text)
+            or _is_subsequence(small_text, rescue_text)
+        ):
+            return rescue_text
+
+        return ""
+
+    return rescue_text
+
+
 def build_consensus_result(
     medium_rows: list[dict[str, Any]],
     small_rows: list[dict[str, Any]],
@@ -94,6 +175,9 @@ def build_consensus_result(
         similarity = 0.0
         text = ""
         segment_confidence = 0.0
+        char_rescue_text, char_rescue_confidence, char_rescue_ratio = (
+            _char_rescue(medium)
+        )
 
         if not _is_usable_text(medium_text, bbox, image_size):
             reasons.append("rejected:non_document_text")
@@ -139,6 +223,21 @@ def build_consensus_result(
             else:
                 reasons.append("uncertain:missing_verifier")
 
+        safe_rescue_text = _safe_char_rescue_text(
+            medium_text,
+            small_text,
+            char_rescue_text,
+            char_rescue_confidence,
+            reasons,
+        )
+        if status == "uncertain" and _has_visible_chars(safe_rescue_text):
+            text = safe_rescue_text
+            status = "partial" if "□" in text else "accepted"
+            segment_confidence = char_rescue_confidence * max(char_rescue_ratio, 0.5)
+            reasons.append("rescued:char_consensus")
+            if "□" in text:
+                reasons.append("masked:char_rescue_disagreement")
+
         segment = {
             "bbox": bbox,
             "text": text,
@@ -149,6 +248,10 @@ def build_consensus_result(
             "small_score": round(small_score, 4),
             "similarity": round(similarity, 4),
             "confidence": round(segment_confidence, 4),
+            "char_rescue_text": char_rescue_text,
+            "safe_char_rescue_text": safe_rescue_text,
+            "char_rescue_confidence": round(char_rescue_confidence, 4),
+            "char_rescue_visible_ratio": round(char_rescue_ratio, 4),
             "rejection_reasons": reasons,
         }
         segments.append(segment)

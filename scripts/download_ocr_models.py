@@ -19,6 +19,7 @@ def main() -> None:
         return_word_box=True,
     )
     TextRecognition(model_name="PP-OCRv6_small_rec")
+    TextRecognition(model_name="PP-OCRv6_tiny_rec")
     print("PP-OCRv6 models are ready.")
 
 
