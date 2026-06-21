@@ -34,13 +34,15 @@ _STRUCTURE_FALLBACK: Dict[str, Any] = {
     "Middleman": "未识别",
     "Price": "未识别",
     "Subject": "未识别",
+    "Evidence": {},
+    "FieldConfidence": {},
     "Translation": "未配置 DASHSCOPE_API_KEY，无法生成译文。",
 }
 
 # ── Pass 1：信息提取专用 Prompt ───────────────────────────────
 _EXTRACT_SYSTEM = """\
 你是一名专研明清地契文书的历史文献专家。
-请从古代契约 OCR 文本中精确提取以下字段，以合法 JSON 返回，字段含义如下：
+请从古代契约 OCR 文本中精确提取字段，并为每个字段返回原文中的连续证据。
 
 - Time        : 契约签订的原文纪年（如"道光十二年三月"）
 - Time_AD     : 对应公元年份整数（无法判断时填 null）
@@ -53,8 +55,11 @@ _EXTRACT_SYSTEM = """\
 
 规则：
 1. 只输出纯 JSON，不加 markdown 代码块标记
-2. 原文中没有的字段填 "未记载"
-3. 不要推断或补充原文没有的内容
+2. 除 Time_AD 外，每个字段格式必须为 {"value": "...", "evidence": "..."}
+3. evidence 必须逐字复制 OCR 原文中的连续片段，不得改字或补字
+4. value 必须直接出现在 evidence 中；多人字段中的每个人名都必须出现在 evidence 中
+5. evidence 含 □ 或无法找到可靠证据时，value 和 evidence 都填 "未识别"
+6. 原文中没有的字段填 "未记载"，不要推断或补充原文没有的内容
 """
 
 # ── Pass 2：译文专用 Prompt ───────────────────────────────────
@@ -94,6 +99,80 @@ def _parse_json_response(content: str) -> Dict[str, Any]:
     return json.loads(cleaned)
 
 
+_EXTRACT_FIELDS = (
+    "Time", "Location", "Seller", "Buyer", "Middleman", "Price", "Subject"
+)
+_UNSUPPORTED_VALUES = {"", "未识别", "未记载", "未知", "None", "null"}
+
+
+def _normalize_support_text(value: Any) -> str:
+    text = str(value or "")
+    return re.sub(r"[\s，。,:：；;、/（）()【】\[\]“”\"'‘’]", "", text)
+
+
+def _value_supported(field: str, value: Any, evidence: Any, source_text: str) -> bool:
+    value_text = str(value or "").strip()
+    evidence_text = str(evidence or "").strip()
+    if value_text in _UNSUPPORTED_VALUES or evidence_text in _UNSUPPORTED_VALUES:
+        return False
+    if "□" in evidence_text or len(evidence_text) > 100:
+        return False
+
+    source_normalized = re.sub(r"\s+", "", source_text or "")
+    evidence_normalized = re.sub(r"\s+", "", evidence_text)
+    if evidence_normalized not in source_normalized:
+        return False
+
+    evidence_support = _normalize_support_text(evidence_text)
+    if field in {"Seller", "Buyer", "Middleman"}:
+        people = [
+            _normalize_support_text(part)
+            for part in re.split(r"[、,，/和及]", value_text)
+            if _normalize_support_text(part)
+        ]
+        return bool(people) and all(person in evidence_support for person in people)
+    return _normalize_support_text(value_text) in evidence_support
+
+
+def _validate_extracted_fields(extracted: Dict[str, Any], source_text: str) -> Dict[str, Any]:
+    """Flatten evidence-bearing fields and reject values unsupported by OCR text."""
+    validated: Dict[str, Any] = {}
+    evidence_map: Dict[str, str] = {}
+    confidence_map: Dict[str, float] = {}
+
+    for field in _EXTRACT_FIELDS:
+        raw = extracted.get(field, "未识别")
+        if isinstance(raw, dict):
+            value = raw.get("value", "未识别")
+            evidence = raw.get("evidence", "")
+        else:
+            value = raw
+            evidence = raw
+
+        if str(value).strip() in {"未记载", "未识别"}:
+            validated[field] = str(value).strip()
+            evidence_map[field] = ""
+            confidence_map[field] = 0.0
+        elif _value_supported(field, value, evidence, source_text):
+            validated[field] = value
+            evidence_map[field] = str(evidence)
+            confidence_map[field] = 1.0
+        else:
+            validated[field] = "未识别"
+            evidence_map[field] = ""
+            confidence_map[field] = 0.0
+
+    time_ad = extracted.get("Time_AD")
+    validated["Time_AD"] = (
+        time_ad
+        if confidence_map.get("Time") == 1.0 and isinstance(time_ad, int)
+        else None
+    )
+    validated["Evidence"] = evidence_map
+    validated["FieldConfidence"] = confidence_map
+    return validated
+
+
 def _call_llm_messages(system: str, user: str, model: str = "qwen-plus",
                        temperature: float = 0.1, top_p: float = 0.3) -> str:
     """通用 messages 格式调用，返回纯文本。默认低温度以获取确定性输出。"""
@@ -131,12 +210,8 @@ def call_structure_llm_sync(text: str) -> Dict[str, Any]:
             user=f"以下是古代契约文书的 OCR 文本，请提取结构化信息：\n\n{text}",
             model="qwen-plus",
         )
-        extracted = _parse_json_response(raw)
-        # 只接受已知字段，防止意外键污染
-        for key in ("Time", "Time_AD", "Location", "Seller", "Buyer",
-                    "Middleman", "Price", "Subject"):
-            if key in extracted:
-                result[key] = extracted[key]
+        extracted = _validate_extracted_fields(_parse_json_response(raw), text)
+        result.update(extracted)
     except Exception as e:
         logger.error("structure_extraction_failed", extra={"error": str(e)})
 
