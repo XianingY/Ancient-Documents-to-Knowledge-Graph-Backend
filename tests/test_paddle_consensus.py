@@ -1,8 +1,8 @@
 from app.services.ocr.consensus import agreement_text, build_consensus_result
 
 
-def _row(text, score, bbox):
-    return {"text": text, "score": score, "bbox": bbox}
+def _row(text, score, bbox, **extra):
+    return {"text": text, "score": score, "bbox": bbox, **extra}
 
 
 def test_agreement_masks_disagreement_including_edges():
@@ -60,6 +60,136 @@ def test_short_role_line_disagreement_is_fully_masked():
 
     assert result.text == "□"
     assert "uncertain:short_or_role_line_disagreement" in result.rejection_reasons
+
+
+def test_char_rescue_restores_verified_short_line_characters():
+    result = build_consensus_result(
+        [
+            _row(
+                "孔珍",
+                0.9,
+                [700, 10, 760, 120],
+                char_rescue_text="孔□",
+                char_rescue_confidence=0.82,
+                char_rescue_visible_ratio=0.5,
+            )
+        ],
+        [{"text": "孔", "score": 0.9}],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "孔□"
+    assert result.segments[0]["status"] == "partial"
+    assert "rescued:char_consensus" in result.rejection_reasons
+    assert "masked:char_rescue_disagreement" in result.rejection_reasons
+
+
+def test_char_rescue_uses_line_agreement_for_same_length_short_lines():
+    result = build_consensus_result(
+        [
+            _row(
+                "車亨福",
+                0.9,
+                [700, 10, 760, 160],
+                char_rescue_text="車□福",
+                char_rescue_confidence=0.82,
+                char_rescue_visible_ratio=0.67,
+            )
+        ],
+        [{"text": "東亨福", "score": 0.9}],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "□亨福"
+    assert result.segments[0]["safe_char_rescue_text"] == "□亨福"
+
+
+def test_low_confidence_char_rescue_is_ignored():
+    result = build_consensus_result(
+        [
+            _row(
+                "孔珍",
+                0.9,
+                [700, 10, 760, 120],
+                char_rescue_text="孔珍",
+                char_rescue_confidence=0.6,
+                char_rescue_visible_ratio=1.0,
+            )
+        ],
+        [{"text": "孔", "score": 0.9}],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "□"
+    assert "rescued:char_consensus" not in result.rejection_reasons
+
+
+def test_long_short_line_disagreement_stays_masked_even_with_char_rescue():
+    result = build_consensus_result(
+        [
+            _row(
+                "請憑親中明運",
+                0.9,
+                [700, 10, 760, 320],
+                char_rescue_text="請□親中□□",
+                char_rescue_confidence=0.88,
+                char_rescue_visible_ratio=0.5,
+            )
+        ],
+        [{"text": "請迈親中明", "score": 0.9}],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "□"
+    assert "rescued:char_consensus" not in result.rejection_reasons
+
+
+def test_low_score_char_rescue_requires_complete_medium_agreement():
+    result = build_consensus_result(
+        [
+            _row(
+                "其田四止",
+                0.93,
+                [700, 10, 760, 220],
+                char_rescue_text="真田四止",
+                char_rescue_confidence=0.88,
+                char_rescue_visible_ratio=1.0,
+            )
+        ],
+        [{"text": "基田自", "score": 0.3}],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "□"
+    assert result.segments[0]["safe_char_rescue_text"] == ""
+
+
+def test_char_rescue_can_restore_missing_verifier_line():
+    result = build_consensus_result(
+        [
+            _row(
+                "其田四止",
+                0.93,
+                [700, 10, 760, 220],
+                char_rescue_text="其田四止",
+                char_rescue_confidence=0.88,
+                char_rescue_visible_ratio=1.0,
+            )
+        ],
+        [],
+        (800, 600),
+        [0, 0, 800, 600],
+    )
+
+    assert result.text == "其田四止"
+    assert result.segments[0]["status"] == "accepted"
+    assert "uncertain:missing_verifier" in result.rejection_reasons
+    assert "rescued:char_consensus" in result.rejection_reasons
 
 
 def test_vertical_lines_are_sorted_right_to_left():
