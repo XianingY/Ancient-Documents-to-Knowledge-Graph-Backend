@@ -5,7 +5,7 @@ import os
 from enum import Enum
 from datetime import datetime, timezone, timedelta
 from sqlite3 import Connection as SQLite3Connection
-from sqlalchemy import create_engine, Integer, String, DateTime, ForeignKey, Enum as SQLEnum, UniqueConstraint
+from sqlalchemy import create_engine, Integer, String, DateTime, ForeignKey, Enum as SQLEnum, UniqueConstraint, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, mapped_column, Mapped
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -98,6 +98,12 @@ class OcrResult(Base):
     raw_text: Mapped[str] = mapped_column(String)
     status: Mapped[OcrStatus] = mapped_column(SQLEnum(OcrStatus), default=OcrStatus.PROCESSING, index=True)
     confidence: Mapped[float] = mapped_column(default=0.0)
+    coverage: Mapped[float] = mapped_column(default=0.0)
+    engine: Mapped[str | None] = mapped_column(String, nullable=True)
+    model_versions: Mapped[str | None] = mapped_column(String, nullable=True)
+    segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    rejection_reasons: Mapped[str | None] = mapped_column(String, nullable=True)
+    human_corrected: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
     # 关系
@@ -183,6 +189,31 @@ class MultiTaskStructuredResult(Base):
     )
 
 
+def _ensure_sqlite_ocr_result_columns():
+    """SQLite create_all does not alter existing tables; patch safe nullable/default columns."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(ocr_result)").fetchall()}
+        if not columns:
+            return
+        if "confidence" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN confidence FLOAT DEFAULT 0.0"))
+        if "coverage" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN coverage FLOAT DEFAULT 0.0"))
+        if "engine" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN engine VARCHAR"))
+        if "model_versions" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN model_versions VARCHAR"))
+        if "segments_json" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN segments_json VARCHAR"))
+        if "rejection_reasons" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN rejection_reasons VARCHAR"))
+        if "human_corrected" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN human_corrected BOOLEAN DEFAULT 0"))
+
+
 def init_db():
     """
     初始化数据库
@@ -192,6 +223,7 @@ def init_db():
     
     # 创建所有表
     Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_ocr_result_columns()
     
     if not db_exists:
         print(f"数据库已创建: {DB_PATH}")

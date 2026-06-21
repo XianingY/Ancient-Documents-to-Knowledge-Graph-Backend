@@ -30,7 +30,7 @@ def task_ocr_image(self, image_id: int):
     logger.info("task_ocr_started", extra={"image_id": image_id, "attempt": self.request.retries + 1})
     db = SessionLocal()
     try:
-        ok = ocr_image_by_id(image_id, db)
+        ok = ocr_image_by_id(image_id, db, raise_errors=True)
         if not ok:
             logger.warning("task_ocr_no_chain", extra={"image_id": image_id})
             return

@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     ENSEMBLE_DOWNSCALE: float = 0.85
     ENSEMBLE_NOISE_SIGMA: float = 3.0
     FUSION_ENABLED: bool = True
+    HALLUCINATION_FILTER_ENABLED: bool = True
+    OCR_LLM_POST_CORRECTION_ENABLED: bool = False
+    EXPECTED_TEXT_MIN: int = 60
+    EXPECTED_TEXT_MAX: int = 420
+    OCR_ENGINE: str = "paddle_v6_consensus"
+    OCR_FALLBACK_ENGINE: str = "qwen_conservative"
+    OCR_TARGET_LONG_SIDE: int = 2400
+    OCR_DETECTION_THRESHOLD: float = 0.2
+    OCR_BOX_THRESHOLD: float = 0.3
+    OCR_UNCLIP_RATIO: float = 1.2
+    OCR_RECOGNITION_BATCH_SIZE: int = 16
+    OCR_CONSENSUS_MIN_SCORE: float = 0.45
+    OCR_CONSENSUS_MIN_SIMILARITY: float = 0.40
 
     @property
     def REDIS_URL(self) -> str:

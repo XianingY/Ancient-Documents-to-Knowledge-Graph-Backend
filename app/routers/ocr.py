@@ -1,7 +1,7 @@
 """OCR 路由：获取 OCR 结果 / 获取某个 OCR 对应的结构化结果列表"""
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -12,6 +12,40 @@ router = APIRouter(prefix="/api/v1/ocr-results", tags=["OCR结果"])
 
 class UpdateOcrResultRequest(BaseModel):
     raw_text: str
+
+
+def _decode_json_list(value: str | None):
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+        return decoded if isinstance(decoded, list) else [decoded]
+    except (TypeError, json.JSONDecodeError):
+        return [value]
+
+
+def _decode_rejection_reasons(value: str | None):
+    return _decode_json_list(value)
+
+
+def _ocr_payload(ocr_result: OcrResult) -> dict:
+    return {
+        "id": ocr_result.id,
+        "image_id": ocr_result.image_id,
+        "raw_text": ocr_result.raw_text,
+        "status": ocr_result.status.value,
+        "confidence": getattr(ocr_result, "confidence", 0.0),
+        "coverage": getattr(ocr_result, "coverage", 0.0),
+        "engine": getattr(ocr_result, "engine", None),
+        "model_versions": getattr(ocr_result, "model_versions", None),
+        "segments": _decode_json_list(getattr(ocr_result, "segments_json", None)),
+        "rejection_reasons": _decode_rejection_reasons(
+            getattr(ocr_result, "rejection_reasons", None)
+        ),
+        "human_corrected": bool(getattr(ocr_result, "human_corrected", False)),
+        "created_at": ocr_result.created_at.isoformat(),
+    }
+
 
 @router.patch("/{ocr_id}")
 async def update_ocr_result(
@@ -30,19 +64,16 @@ async def update_ocr_result(
         raise HTTPException(status_code=404, detail="OCR结果不存在")
 
     ocr_result.raw_text = request.raw_text
+    ocr_result.confidence = 1.0
+    ocr_result.coverage = 1.0
+    ocr_result.human_corrected = True
     db.commit()
     db.refresh(ocr_result)
 
     return {
         "success": True,
         "message": "修改成功",
-        "data": {
-            "id": ocr_result.id,
-            "image_id": ocr_result.image_id,
-            "raw_text": ocr_result.raw_text,
-            "status": ocr_result.status.value,
-            "created_at": ocr_result.created_at.isoformat(),
-        },
+        "data": _ocr_payload(ocr_result),
     }
 
 @router.get("/{ocr_id}")
@@ -62,13 +93,7 @@ async def get_ocr_result(
 
     return {
         "success": True,
-        "data": {
-            "id": ocr_result.id,
-            "image_id": ocr_result.image_id,
-            "raw_text": ocr_result.raw_text,
-            "status": ocr_result.status.value,
-            "created_at": ocr_result.created_at.isoformat(),
-        },
+        "data": _ocr_payload(ocr_result),
     }
 
 

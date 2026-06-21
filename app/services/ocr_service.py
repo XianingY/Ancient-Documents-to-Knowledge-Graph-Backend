@@ -3,98 +3,29 @@ import io
 import os
 import re
 import base64
+import json
+from datetime import timedelta
 from sqlalchemy.orm import Session
-from database import SessionLocal, Image, OcrResult, OcrStatus
+from database import SessionLocal, Image, OcrResult, OcrStatus, get_beijing_time
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.services.ocr import OcrBackendUnavailable, OcrPipelineResult, run_paddle_consensus
 
 logger = get_logger(__name__)
 
 # ── OCR 专用 Prompt ───────────────────────────────────────────────────────────
 #
-# 针对中国古代契约文书（土地契约、房屋契约、借贷契约等）精心设计。
-# 要点：
-#   • 明确告知文档类型，引导模型激活相关先验知识
-#   • 说明古代汉语书写规范（竖排、从右至左）
-#   • 列举高频字词和术语，防止模型"纠正"成现代字形
-#   • 提示破损/模糊处的处理方式
-#   • 严格禁止添加任何解释性内容
-#
+# 保守识别优先：只转录图片上能看见的字，避免把契约套话、地名、人名、
+# 价格等按领域先验补全成“看起来合理”的文本。
 _OCR_SYSTEM_PROMPT = """\
-你是一位专精于中国古代契约文书的文献整理专家，精通明清土地买卖契约、房契、借贷文书的识别与转录。
-
-请严格遵循以下规则对图片中的文字进行识别与转录：
-
-【核心原则——逐字照录】
-你必须逐字照录图片上看到的每一个字，不得遗漏、不得替换、不得添加。
-契约文书的完整性是最重要的——宁可多输出，不可少输出。
-
-【绝对禁令——违反即失败】
-以下字符必须原样保留，禁止任何形式的转换：
-• 数字：九/十/七/八/百/千/万/一/二/三/四/五/六 → 绝对不能改成 玖/拾/柒/捌/佰/仟/萬/壹/貳/叁/肆/伍/陸
-• 异体字：弍/弐 → 绝对不能改成 貳/贰
-• 简体字：如果原文就是简体（如"九兄"的"九"），必须保留"九"，不能改成"玖"
-
-【阅读顺序】
-- 古代契约通常为竖排书写，从右至左逐列阅读
-- 若存在多列，请从最右列开始，逐列向左转录
-- 请完整转录从第一行到最后一行，不要跳过任何内容
-
-【常见形近字——必须精确区分】
-以下字形极其相似，必须根据上下文精确判断：
-• 移（yi）vs 孩（hai）：契约开头"今因移就"是固定套语，不是"孩"
-• 就（jiu）vs 訟（song）："移就"是固定搭配，不是"訟"
-• 獐（zhang）vs 頭（tou）：地名"虎獐垸"不是"虎頭坑"
-• 篤（du）vs 鷹（ying）：堂号"篤敘堂"不是"鷹敘書"
-• 敘（xu）vs 書（shu）："篤敘堂"的"敘"不是"書"
-• 珍（zhen）vs 琦（qi）：人名"孔珍"不是"孔琦"
-• 運（yun）vs 運（yun）：人名"明運"的"運"要保留
-• 亨（heng）vs 廣（guang）：人名"亨福"不是"廣福"
-
-【堂号识别——固定格式】
-契约中常见的堂号有固定写法，必须精确识别：
-• 篤敘堂（最常见的买方堂号）——绝不能写成"鷹敘書"或"篤秋堂"
-• 熊宗义（人名，不是堂号）
-• 请仔细辨别"篤"和"鷹"的字形差异
-
-【地名识别——垸字特征】
-古代契约中的地名常以"垸"结尾（湖北地区常见）：
-• 虎獐垸（正确）vs 虎頭坑（错误）
-• 高作垸（正确）vs 高作坑（错误）
-• 中洲垸（正确）
-• 请仔细辨别"獐"和"頭"的字形差异
-
-【文字规范】
-- 你必须逐字照录图片上看到的原始字形，不得以任何方式转换为现代简体字
-- 以下为强制对照（左侧为必须输出的形式，右侧为绝对禁止输出的形式）：
-  · 寶（禁→宝）、號（禁→号）、錢（禁→钱）、銀（禁→银）、賣（禁→卖）
-  · 買（禁→买）、約（禁→约）、憑（禁→凭）、陸（禁→陆）、歲（禁→岁）
-  · 糧（禁→粮）、畝（禁→亩）、釐（禁→厘）、絲（禁→丝）、塵（禁→尘）
-  · 親（禁→亲）、中（保留）、說（禁→说）、合（保留）、筆（禁→笔）
-  · 歸（禁→归）、頭（禁→头）、爾（禁→尔）、處（禁→处）、從（禁→从）
-  · 與（禁→与）、書（禁→书）、見（禁→见）、聞（禁→闻）、關（禁→关）
-
-【人名识别】
-- 请仔细识别人名中的每个字，特别是姓和名的搭配
-- 常见姓氏：熊、劉、伍、王、張、陳、李、趙等
-- 常见名字用字：德運、永濟、永庭、明運、恒忠、孔珍等
-
-【破损/模糊/印章处理】
-- 确定可辨认的字符直接输出
-- 无法辨认的字用 □ 表示，连续多字用 □□□ 表示
-- 被印章（红色朱印）覆盖的文字：如果能透过印章辨认则输出，否则用 □ 表示
-- 印章本身的文字用【印文：…】标注，花押用【押】标注
-- 朱批用【朱批：…】标注
-
-【输出格式】
-- 只输出转录的文字原文，不添加任何说明、注释或解释
-- 不以"图片中的文字是："等句子开头
-- 不添加原文中没有的标点符号（如句号、逗号等现代标点）
-- 保留原文段落换行，不合并或拆分段落
-- 数字串（如价格、面积）须保持连续，不得拆分
+请逐字转录图片中的可见文字。
+只写你能从图像中看见的字，不要根据契约格式、常见套语、地名、人名或价格进行推断、补全或修正。
+模糊、破损、被遮挡、无法确认的字用 □ 表示；连续无法确认的字可写作 □□□。
+保留原文的大致换行。不要添加标点、解释、标题、注释或“图片中的文字是”等前后缀。
+如果只能辨认少量文字，也只输出这些可辨认文字和必要的 □，不要编造完整契约。
 """
 
-_OCR_USER_PROMPT = "请识别并转录图片中的全部文字。"
+_OCR_USER_PROMPT = _OCR_SYSTEM_PROMPT
 
 
 # ── 图像预处理 ────────────────────────────────────────────────────────────────
@@ -140,17 +71,6 @@ def _preprocess_image(image_path: str) -> str:
         img_array[:, :, 0] = np.where(red_mask, np.minimum(r, g * 1.1), r)
         img = PILImage.fromarray(img_array.astype(np.uint8))
 
-        # ②b Real-ESRGAN 超分辨率（仅在模型可用且图片模糊时启用）
-        upsampler = _init_esrgan()
-        if upsampler is not None and os.path.getsize(image_path) < 500_000:
-            try:
-                import numpy as np
-                img_array = np.array(img)[:, :, ::-1]
-                output, _ = upsampler.enhance(img_array, outscale=2)
-                img = PILImage.fromarray(output[:, :, ::-1])
-            except Exception as e:
-                logger.warning("esrgan_enhance_failed", extra={"error": str(e)})
-
         # ③ 转灰度
         gray = img.convert("L")
 
@@ -175,44 +95,6 @@ def _preprocess_image(image_path: str) -> str:
     except Exception as e:
         logger.warning("image_preprocess_failed", extra={"error": str(e)})
         return image_path
-
-
-# ── Real-ESRGAN 超分辨率 ──────────────────────────────────────────────────────
-
-_esrgan_upsampler = None
-
-def _init_esrgan():
-    """初始化 Real-ESRGAN 超分辨率模型（懒加载，仅在需要时初始化一次）。"""
-    global _esrgan_upsampler
-    if _esrgan_upsampler is not None:
-        return _esrgan_upsampler
-    try:
-        import torch
-        from basicsr.archs.srvgg_arch import SRVGGNetCompact
-        from realesrgan import RealESRGANer
-
-        model_path = settings.REAL_ESRGAN_MODEL_PATH
-        if not os.path.exists(model_path):
-            logger.warning("esrgan_model_not_found", extra={"path": model_path})
-            return None
-
-        model = SRVGGNetCompact(
-            num_in_ch=3, num_out_ch=3, num_feat=64,
-            num_conv=32, upscale=4, act_type='prelu'
-        )
-        use_half = torch.cuda.is_available()
-        _esrgan_upsampler = RealESRGANer(
-            scale=4, model_path=model_path, model=model,
-            tile=800, tile_pad=10, pre_pad=0, half=use_half, gpu_id=None,
-        )
-        logger.info("esrgan_initialized", extra={"half": use_half})
-        return _esrgan_upsampler
-    except ImportError as e:
-        logger.warning("esrgan_not_installed", extra={"error": str(e)})
-        return None
-    except Exception as e:
-        logger.error("esrgan_init_failed", extra={"error": str(e)})
-        return None
 
 
 # ── VL 输出清洗 ───────────────────────────────────────────────────────────────
@@ -285,161 +167,104 @@ def _ensure_traditional_chinese(text: str) -> str:
     return "".join(result)
 
 
-def _apply_domain_corrections(text: str) -> str:
-    """
-    基于领域知识的确定性校正规则（不依赖LLM调用，速度快、100%可靠）。
-    专门针对古代契约文书中的高频OCR错误。
-    """
-    # ── 堂号校正（契约中最常见的买方堂号） ──
-    # 篤敘堂 是最常见的买方堂号，OCR 常误识别为其他形式
-    hall_corrections = [
-        ("鷹敘書", "篤敘堂"),  # 最常见错误
-        ("鷹敘堂", "篤敘堂"),
-        ("篤秋堂", "篤敘堂"),  # 3·144 中的错误
-        ("鷹敘書名下", "篤敘堂名下"),
-        ("篤秋堂名下", "篤敘堂名下"),
-    ]
-    for wrong, correct in hall_corrections:
-        text = text.replace(wrong, correct)
-
-    # ── 套语校正（契约固定格式） ──
-    # "今因移就" 是契约标准套语，OCR 常误识别为 "今因子便" 等
-    phrase_corrections = [
-        ("今因子便", "今因移就"),
-        ("今因家訟子便", "今因移就"),  # 3·141 错误
-        ("今因孩訟子便", "今因移就"),
-        ("今因家訟子便", "今因移就"),
-        ("今因子訟便", "今因移就"),
-        ("今因子訟", "今因移就"),
-        ("今因移灶", "今因移就"),  # 3·144 错误
-    ]
-    for wrong, correct in phrase_corrections:
-        text = text.replace(wrong, correct)
-
-    # ── 地名校正 ──
-    location_corrections = [
-        ("虎頭坑", "虎獐垸"),  # 3·141 错误
-        ("虎頭院", "虎獐垸"),
-        ("虎獐坑", "虎獐垸"),
-        ("中州垸", "中洲垸"),  # 3·144
-    ]
-    for wrong, correct in location_corrections:
-        text = text.replace(wrong, correct)
-
-    # ── 动词校正 ──
-    verb_corrections = [
-        ("來賣與", "賣與"),
-        ("來賣與", "賣與"),
-        ("來賣", "賣"),
-    ]
-    for wrong, correct in verb_corrections:
-        text = text.replace(wrong, correct)
-
-    # ── 固定短语校正 ──
-    phrase_corrections_2 = [
-        ("恐口共憑", "恐口無憑"),
-        ("恐口其憑", "恐口無憑"),
-        ("戶此為從", "立此為據"),
-        ("戶此為據", "立此為據"),
-        ("有為急阻", "百為無阻"),
-        ("有為立阻", "百為無阻"),
-        ("除陽兩便", "陰陽兩便"),
-        ("除陽雨便", "陰陽兩便"),
-    ]
-    for wrong, correct in phrase_corrections_2:
-        text = text.replace(wrong, correct)
-
-    return text
-
-
 # ── V3+V4 融合 OCR ────────────────────────────────────────────────────────────
 
-def _normalize_for_comparison(text: str) -> set:
-    """Normalize text for character-level comparison."""
-    return set(re.sub(r'[\s□■]', '', text))
+_COMMON_CONTRACT_CHARS = set(
+    "立永賣卖買买田地白水契約约人今因移就不便將将本己自祖私置受分"
+    "形畝亩分厘釐毫毛絲丝載载糧粮銀银錢钱文串整乙壹貳叁參肆伍陸"
+    "柒捌玖拾佰仟零〇請请憑凭親亲中說说合出筆笔與与名下為为業业"
+    "三面言定備备時时值價价係系仝同手領领訖讫之後后任從从主"
+    "管收撥拨佃耕種种陰阴陽阳兩两百無无阻並并準准折抬情弊"
+    "相干恐口有此據据止界東东西南北道光年月日"
+)
 
 
-def _is_in_valid_context(ch: str, v3_text: str, v4_text: str) -> bool:
+def _is_common_contract_char(ch: str) -> bool:
+    """Return True for generic contract characters; excludes names/places as facts."""
+    return ch in _COMMON_CONTRACT_CHARS or ch in {"□", "囗", "■"}
+
+
+def _clean_ocr_candidate(text: str) -> str:
+    """Normalize failed API responses into empty candidates before fusion."""
+    if not text or text.startswith("Error:"):
+        return ""
+    return _clean_vl_output(text)
+
+
+def _next_non_gap(chars, start: int) -> str:
+    for ch in chars[start:]:
+        if ch != "_":
+            return ch
+    return ""
+
+
+def _can_insert_v3_segment(segment: list[str], left_anchor: str, right_anchor: str) -> bool:
     """
-    Check if character appears in a valid context.
-    Known valid phrases in ancient contracts.
+    Conservative V3 supplement rule.
+
+    V3 may fill only very short gaps surrounded by V4 context and made of
+    generic contract characters. Names, places and long phrase insertions stay out.
     """
-    valid_phrases = ['篤敘堂', '恐口無憑', '立此為據', '陰陽兩便', '百為無阻',
-                     '永遠為業', '立永賣', '請憑親中', '其田四止']
-    for phrase in valid_phrases:
-        if ch in phrase and phrase in v3_text:
-            return True
-    return False
+    if not segment or len(segment) > 3:
+        return False
+    if not left_anchor or not right_anchor:
+        return False
+    return all(_is_common_contract_char(ch) for ch in segment)
 
 
-def _is_common_ocr_error(ch: str) -> bool:
-    """Check if character is a known OCR error for ancient documents."""
-    common_errors = {'鷹', '訟', '坑'}
-    return ch in common_errors
+def _agreement_only_text(v3_text: str, v4_text: str) -> str:
+    """Keep only aligned model agreements; collapse uncertain spans to □."""
+    v3_text = _clean_ocr_candidate(v3_text)
+    v4_text = _clean_ocr_candidate(v4_text)
+    if not v3_text or not v4_text:
+        return v4_text
 
+    from sequence_align.pairwise import needleman_wunsch
 
-def _is_reasonable_frequency(ch: str, text: str) -> bool:
-    """Check if character frequency is reasonable for this document type."""
-    common_chars = set('立賣買田約錢銀兩畝分厘毫糧中人筆')
-    if ch in common_chars:
-        return True
-    if text.count(ch) >= 2:
-        return True
-    return False
-
-
-def _validate_tier3(tier3_chars: set, v3_text: str, v4_text: str) -> set:
-    """
-    Validate Tier 3 characters using domain rules.
-    Returns only characters that pass validation.
-    
-    Key principle: V3-only content is REJECTED by default unless it passes
-    specific validation checks. This prevents hallucinated text from being
-    included in the fusion output.
-    """
-    validated = set()
-    
-    known_valid_contract = set('立永賣白田約人今因移就將本己受分虎獐垸形四三厘捌毫載粮合勺銀參拾文整係德運仝中親手領訖自賣之後任從買主管業撥佃收粮耕種陰陽兩便百為無阻此自賣己分不與親族相干恐口無憑為據道光年月日筆東亨福南廣運西百意北張福篤敘堂孔珍明運恒忠')
-    
-    known_hallucinations = {'鷹', '訟', '坑', '梀', '駕', '偘', '寨'}
-    
-    for ch in tier3_chars:
-        if ch in known_hallucinations:
-            continue
-        
-        if ch in known_valid_contract:
-            validated.add(ch)
-            continue
-        
-        if _is_in_valid_context(ch, v3_text, v4_text):
-            validated.add(ch)
-            continue
-        
-        if _is_reasonable_frequency(ch, v3_text) and v3_text.count(ch) >= 2:
-            validated.add(ch)
-            continue
-    
-    return validated
+    aligned_v3, aligned_v4 = needleman_wunsch(
+        list("".join(v3_text.split())),
+        list("".join(v4_text.split())),
+        "_",
+        match_score=2.0,
+        mismatch_score=-1.0,
+        indel_score=-1.0,
+    )
+    result = []
+    uncertain = False
+    for a, b in zip(aligned_v3, aligned_v4):
+        if a == b and a != "_":
+            if uncertain:
+                result.append("□")
+                uncertain = False
+            result.append(a)
+        else:
+            uncertain = True
+    if uncertain:
+        result.append("□")
+    return "".join(result)
 
 
 def _fuse_v3_v4(v3_text: str, v4_text: str) -> tuple:
     """
-    Tiered fusion of v3 and v4 OCR outputs using sequence alignment.
+    Conservative fusion using v4 as the trusted baseline.
     
     Strategy:
-    - Use Needleman-Wunsch to align v3 and v4 outputs
-    - Where both agree: keep (high confidence)
-    - Where only v4 has content: keep (v4 is precise)
-    - Where only v3 has content: apply domain validation
+    - v4-only text is kept as-is after cleanup
+    - mismatches prefer v4
+    - v3-only content is kept only for tiny, anchored, generic gaps
+    - v3 API errors or empty v4 do not let v3 become the final text
     
     Returns: (fused_text, confidence_score)
     """
+    v3_text = _clean_ocr_candidate(v3_text)
+    v4_text = _clean_ocr_candidate(v4_text)
+
     if not v3_text and not v4_text:
+        return "", 0.0
+    if not v4_text:
         return "", 0.0
     if not v3_text:
         return v4_text, 1.0
-    if not v4_text:
-        return v3_text, 0.0
     
     from sequence_align.pairwise import needleman_wunsch
     
@@ -454,8 +279,9 @@ def _fuse_v3_v4(v3_text: str, v4_text: str) -> tuple:
     fused_chars = []
     agree_count = 0
     v4_only_count = 0
-    v3_only_count = 0
     v3_only_validated = 0
+    v3_only_dropped = 0
+    mismatch_count = 0
     
     i = 0
     while i < len(aligned_v3):
@@ -469,29 +295,108 @@ def _fuse_v3_v4(v3_text: str, v4_text: str) -> tuple:
             fused_chars.append(b)
             v4_only_count += 1
         elif b == "_":
-            if _is_in_valid_context(a, v3_text, v4_text) or _is_reasonable_frequency(a, v3_text):
-                fused_chars.append(a)
-                v3_only_count += 1
-                v3_only_validated += 1
-            elif not _is_common_ocr_error(a):
-                fused_chars.append(a)
-                v3_only_count += 1
-                v3_only_validated += 1
+            segment = []
+            start = i
+            while i < len(aligned_v3) and aligned_v4[i] == "_" and aligned_v3[i] != "_":
+                segment.append(aligned_v3[i])
+                i += 1
+            left_anchor = fused_chars[-1] if fused_chars else ""
+            right_anchor = _next_non_gap(aligned_v4, i)
+            if _can_insert_v3_segment(segment, left_anchor, right_anchor):
+                fused_chars.extend(segment)
+                v3_only_validated += len(segment)
+            else:
+                v3_only_dropped += len(segment)
+            continue
         else:
-            fused_chars.append(a)
-            agree_count += 1
+            fused_chars.append(b)
+            if a == b:
+                agree_count += 1
+            else:
+                mismatch_count += 1
         
         i += 1
     
-    total = agree_count + v4_only_count + v3_only_validated
-    confidence = (agree_count + v4_only_count) / total if total > 0 else 0.0
+    compared_total = agree_count + mismatch_count + v4_only_count + v3_only_validated
+    confidence = agree_count / compared_total if compared_total > 0 else 0.0
+    if v3_only_dropped or mismatch_count:
+        logger.info("ocr_conservative_fusion", extra={
+            "agree": agree_count,
+            "v4_only": v4_only_count,
+            "v3_inserted": v3_only_validated,
+            "v3_dropped": v3_only_dropped,
+            "mismatches_prefer_v4": mismatch_count,
+            "confidence": confidence,
+        })
     
     return "".join(fused_chars), confidence
 
 
-def _run_api_predict_v3(input_file: str, max_retries: int = 5) -> str:
-    """v3 model (qwen-vl-max) - high recall, low precision."""
-    return _run_api_predict(input_file, model="qwen-vl-max", max_retries=max_retries)
+def _length_ratio_gate(text: str) -> tuple[bool, str | None]:
+    visible_len = len(re.sub(r"\s", "", text or ""))
+    if visible_len == 0:
+        return True, None
+    max_len = settings.EXPECTED_TEXT_MAX
+    if visible_len > max_len * 1.4:
+        return False, f"hard_reject:too_long:{visible_len}>{int(max_len * 1.4)}"
+    return True, None
+
+
+_TEMPLATE_PHRASES = [
+    "今因移就", "三面言定", "親手領訖", "任從買主", "陰陽兩便",
+    "百為無阻", "恐口無憑", "立此為據", "永遠為業",
+]
+
+
+def _template_phrase_density(text: str) -> float:
+    clean = re.sub(r"\s", "", text or "")
+    if not clean:
+        return 0.0
+    hits = sum(1 for phrase in _TEMPLATE_PHRASES if phrase in clean)
+    return hits / max(len(clean) / 120, 1)
+
+
+def _v3_only_contribution_ratio(fused_text: str, v4_text: str) -> float:
+    fused_clean = re.sub(r"\s", "", fused_text or "")
+    v4_clean = re.sub(r"\s", "", _clean_ocr_candidate(v4_text) or "")
+    if not fused_clean:
+        return 0.0
+    extra = max(len(fused_clean) - len(v4_clean), 0)
+    return extra / len(fused_clean)
+
+
+def _filter_hallucinations(
+    fused_text: str,
+    v3_text: str,
+    v4_text: str,
+    confidence: float,
+) -> tuple[str, float, list[str]]:
+    """Apply deterministic post-fusion hallucination filters."""
+    if not settings.HALLUCINATION_FILTER_ENABLED:
+        return fused_text, confidence, []
+
+    reasons: list[str] = []
+    passed, reason = _length_ratio_gate(fused_text)
+    if not passed and reason:
+        reasons.append(reason)
+
+    v3_ratio = _v3_only_contribution_ratio(fused_text, v4_text)
+    if v3_ratio > 0.12:
+        reasons.append(f"hard_reject:v3_only_ratio:{v3_ratio:.2f}>0.12")
+
+    density = _template_phrase_density(fused_text)
+    if density >= 5 and confidence < 0.75:
+        reasons.append(f"hard_reject:template_density:{density:.2f}")
+
+    fallback = _clean_ocr_candidate(v4_text)
+    if not reasons and v3_text and v4_text and confidence < 0.45:
+        reasons.append(f"hard_reject:low_model_agreement:{confidence:.2f}<0.45")
+        fallback = _agreement_only_text(v3_text, v4_text)
+
+    if any(r.startswith("hard_reject") for r in reasons):
+        return fallback, confidence, reasons
+
+    return fused_text, confidence, reasons
 
 
 def _run_api_predict_v4(input_file: str, max_retries: int = 5) -> str:
@@ -501,16 +406,18 @@ def _run_api_predict_v4(input_file: str, max_retries: int = 5) -> str:
 
 def _correct_ocr_text(raw_text: str) -> str:
     """
-    使用 Qwen-Plus 对 OCR 原文做领域专项校正（从 Turbo 升级以获得更强语义理解）：
-      • 修正视觉相近字（如 己/已/巳、戊/戌/戍、买/卖、田/由/甲/申）
-      • 修正断字/连字错误
-      • 规范化大写数字和计量单位
-    只在文字超过 20 字时启用，避免空白图片的无意义调用。
-    """
-    # 先应用确定性规则（快速、可靠）
-    text = _apply_domain_corrections(raw_text)
+    保守后处理：默认只做明确的简繁字形归一化。
 
-    if not settings.DASHSCOPE_API_KEY or len(text.strip()) < 20:
+    LLM 后校正会按契约上下文补全缺字，容易把 OCR 阶段的 raw text
+    变成“合理文本”而非“可见文本”，因此默认关闭。
+    """
+    text = _ensure_traditional_chinese(raw_text or "")
+
+    if (
+        not settings.OCR_LLM_POST_CORRECTION_ENABLED
+        or not settings.DASHSCOPE_API_KEY
+        or len(text.strip()) < 20
+    ):
         return text
 
     try:
@@ -519,24 +426,19 @@ def _correct_ocr_text(raw_text: str) -> str:
 
         prompt = (
             "以下是对一份中国古代契约文书进行 OCR 识别后得到的原始文本。\n\n"
-            "请根据上下文和古代契约文书的语言规律，对明显的 OCR 识别错误进行最小化校正。\n\n"
+            "请只修正确定的简繁字形问题，不要根据上下文补全地名、人名、价格或契约套语。\n\n"
             "【绝对禁令——违反即失败】\n"
             "以下字符必须原样保留，禁止任何形式的转换或\"纠正\"：\n"
             "• 数字：九/十/七/八/百/千/万/一/二/三/四/五/六 → 绝对不能改成 玖/拾/柒/捌/佰/仟/萬/壹/貳/叁/肆/伍/陸\n"
             "• 异体字：弍/弐 → 绝对不能改成 貳/贰\n"
             "• 简体字：如果原文就是简体（如\"九兄\"的\"九\"），必须保留\"九\"，不能改成\"玖\"\n"
             "• 任何数字组合：\"十柒\"不能改成\"拾柒\"，\"九百\"不能改成\"玖佰\"\n\n"
-            "【可修正的错误——仅限以下类型】\n"
-            "1. 形近字误识别：己→已、戊→戌、土→士、大→太、日→曰、末→未、田→由\n"
-            "2. 同音人名误识别：如章峙三（非章兆三）\n"
-            "3. 天干地支误识别：如戊戌（须精确区分戊/戌/戍）\n"
-            "4. 断字/连字错误\n\n"
             "【校正规则】\n"
-            "1. 只修正上述\"可修正\"类型中的明确错误\n"
+            "1. 只修正简繁字形中的明确错误\n"
             "2. 不确定的内容一律保留原样\n"
             "3. 保留 □ 占位符\n"
             "4. 保留原文换行和段落结构\n"
-            "5. 不添加标点、注释、说明\n"
+            "5. 不添加标点、注释、说明，不补全文本\n"
             "6. 直接输出校正后的纯文本\n\n"
             f"OCR 原始文本：\n{text}"
         )
@@ -675,13 +577,13 @@ def _ensemble_ocr(img, num_passes=None):
 
 # ── 主识别函数 ────────────────────────────────────────────────────────────────
 
-def _run_api_predict(input_file: str, model: str = "qwen-vl-max", max_retries: int = 5) -> str:
+def _run_api_predict(input_file: str, model: str = "qwen-vl-ocr-latest", max_retries: int = 5) -> str:
     """
     使用 DashScope Qwen-VL 模型对古代契约文书图片进行 OCR。
     
     Args:
         input_file: Image file path
-        model: Model name ("qwen-vl-max" for v3, "qwen-vl-ocr-latest" for v4)
+        model: OCR model name; production fallback uses qwen-vl-ocr-latest only
         max_retries: Maximum number of retries
     
     Returns:
@@ -700,10 +602,6 @@ def _run_api_predict(input_file: str, model: str = "qwen-vl-max", max_retries: i
 
         messages = [
             {
-                "role": "system",
-                "content": [{"text": _OCR_SYSTEM_PROMPT}],
-            },
-            {
                 "role": "user",
                 "content": [
                     {"image": local_file_path},
@@ -718,7 +616,9 @@ def _run_api_predict(input_file: str, model: str = "qwen-vl-max", max_retries: i
                 response = MultiModalConversation.call(
                     model=model,
                     messages=messages,
-                    top_p=0.1,
+                    temperature=0.01,
+                    top_p=0.001,
+                    top_k=1,
                 )
 
                 if response.status_code == 200:
@@ -746,7 +646,89 @@ def _run_api_predict(input_file: str, model: str = "qwen-vl-max", max_retries: i
         logger.error("api_ocr_execution_failed", extra={"error": str(e)})
         return f"Error: {str(e)}"
 
-def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
+
+def _run_qwen_conservative_pipeline(input_file: str) -> OcrPipelineResult:
+    """Single-model fallback. Generated auxiliary text never enters the output."""
+    enhanced_file = _preprocess_image(input_file)
+    try:
+        raw_text = _run_api_predict_v4(enhanced_file)
+        if not raw_text or raw_text.startswith("Error:"):
+            raise RuntimeError(raw_text or "Qwen OCR returned no text")
+        text = _correct_ocr_text(_clean_vl_output(raw_text))
+        visible = len(re.sub(r"[\s□■]", "", text))
+        return OcrPipelineResult(
+            text=text,
+            confidence=0.0,
+            coverage=1.0 if visible else 0.0,
+            engine="qwen_conservative",
+            model_versions="qwen-vl-ocr-latest",
+            segments=[{
+                "bbox": None,
+                "text": text,
+                "status": "fallback",
+                "medium_text": "",
+                "medium_score": 0.0,
+                "small_text": "",
+                "small_score": 0.0,
+                "similarity": 0.0,
+                "rejection_reasons": ["fallback:unverified_qwen_output"],
+            }],
+            rejection_reasons=["fallback:unverified_qwen_output"],
+        )
+    finally:
+        if enhanced_file != input_file and os.path.exists(enhanced_file):
+            try:
+                os.remove(enhanced_file)
+            except OSError:
+                pass
+
+
+def _run_configured_ocr(input_file: str) -> OcrPipelineResult:
+    if settings.OCR_ENGINE == "paddle_v6_consensus":
+        try:
+            return run_paddle_consensus(input_file)
+        except Exception as exc:
+            logger.warning(
+                "paddle_ocr_fallback",
+                extra={"error": str(exc), "fallback": settings.OCR_FALLBACK_ENGINE},
+            )
+            if settings.OCR_FALLBACK_ENGINE != "qwen_conservative":
+                raise
+            if not settings.DASHSCOPE_API_KEY:
+                raise OcrBackendUnavailable(
+                    "PaddleOCR failed and DASHSCOPE_API_KEY is unavailable"
+                ) from exc
+            return _run_qwen_conservative_pipeline(input_file)
+    if settings.OCR_ENGINE == "qwen_conservative":
+        return _run_qwen_conservative_pipeline(input_file)
+    raise ValueError(f"Unsupported OCR_ENGINE: {settings.OCR_ENGINE}")
+
+
+def _recent_processing_result(db: Session, image_id: int) -> OcrResult | None:
+    active = (
+        db.query(OcrResult)
+        .filter(OcrResult.image_id == image_id, OcrResult.status == OcrStatus.PROCESSING)
+        .order_by(OcrResult.id.desc())
+        .first()
+    )
+    if not active:
+        return None
+    created_at = active.created_at
+    now = get_beijing_time()
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=now.tzinfo)
+    if now - created_at <= timedelta(minutes=30):
+        return active
+    active.status = OcrStatus.FAILED
+    db.commit()
+    return None
+
+
+def ocr_image_by_id(
+    image_id: int,
+    db: Session = None,
+    raise_errors: bool = False,
+) -> bool:
     """
     输入：image_id (Image表中的主键)
     处理：从数据库中查找图片路径，执行OCR（同步版本，供 Celery Worker 调用）
@@ -771,65 +753,50 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
             logger.error("image_file_not_exist", extra={"path": input_file})
             return False
 
-        enhanced_file = input_file  # 预处理后的临时文件路径
+        active = _recent_processing_result(db, image_id)
+        if active:
+            logger.info(
+                "ocr_already_processing",
+                extra={"image_id": image_id, "ocr_result_id": active.id},
+            )
+            return False
+
         try:
             ocr_result = OcrResult(
                 image_id=image_id,
                 raw_text="",
-                status=OcrStatus.PROCESSING
+                status=OcrStatus.PROCESSING,
+                engine=settings.OCR_ENGINE,
             )
             db.add(ocr_result)
             db.commit()
             db.refresh(ocr_result)
 
-            # ① 图像预处理（增强对比度/锐化，提升模型识别率）
-            enhanced_file = _preprocess_image(input_file)
-
-            # ② V3+V4 融合 OCR（并行调用两个模型，融合结果）
-            if settings.FUSION_ENABLED:
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    future_v3 = executor.submit(_run_api_predict_v3, enhanced_file)
-                    future_v4 = executor.submit(_run_api_predict_v4, enhanced_file)
-                    
-                    v3_text = future_v3.result()
-                    v4_text = future_v4.result()
-                
-                extracted_text, confidence = _fuse_v3_v4(v3_text, v4_text)
-                logger.info("ocr_fusion_completed", extra={
-                    "v3_len": len(v3_text) if v3_text else 0,
-                    "v4_len": len(v4_text) if v4_text else 0,
-                    "fused_len": len(extracted_text) if extracted_text else 0,
-                    "confidence": confidence,
-                })
-            else:
-                # 回退到单模型模式
-                if settings.ENSEMBLE_PASSES >= 2:
-                    from PIL import Image as PILImage
-                    ocr_img = PILImage.open(enhanced_file)
-                    extracted_text = _ensemble_ocr(ocr_img)
-                else:
-                    extracted_text = _run_api_predict(enhanced_file)
-                confidence = 0.0
-
-            if not extracted_text or extracted_text.startswith("Error:"):
-                extracted_text = extracted_text or "未能识别到文字。"
-
-            # ③ VL 输出清洗（去除模型幻觉前缀/后缀、合并多余空行）
-            cleaned_text = _clean_vl_output(extracted_text)
-
-            # ④ 后校正 Pass（用 qwen-plus 修正视觉相近字误识别）
-            cleaned_text = _correct_ocr_text(cleaned_text)
+            pipeline_result = _run_configured_ocr(input_file)
+            cleaned_text = pipeline_result.text.strip() or "□"
 
             ocr_result.raw_text = cleaned_text
-            ocr_result.confidence = confidence
+            ocr_result.confidence = pipeline_result.confidence
+            ocr_result.coverage = pipeline_result.coverage
+            ocr_result.engine = pipeline_result.engine
+            ocr_result.model_versions = pipeline_result.model_versions
+            ocr_result.segments_json = json.dumps(
+                pipeline_result.segments,
+                ensure_ascii=False,
+            ) if pipeline_result.segments else None
+            ocr_result.rejection_reasons = json.dumps(
+                pipeline_result.rejection_reasons,
+                ensure_ascii=False,
+            ) if pipeline_result.rejection_reasons else None
             ocr_result.status = OcrStatus.DONE
             db.commit()
 
-            # ⑤ 立即写入 ChromaDB 向量索引
-            # 使用 ocr_{id} 作为 doc_id，后续结构化完成后会 upsert 覆盖（丰富元数据）
-            # 这样保证所有 OCR 完成的图片都能被智能问答检索到
-            _index_ocr_to_chroma(ocr_result.id, cleaned_text, image)
+            _index_ocr_to_chroma(
+                ocr_result.id,
+                cleaned_text,
+                image,
+                pipeline_result,
+            )
 
             return True
 
@@ -838,22 +805,21 @@ def ocr_image_by_id(image_id: int, db: Session = None) -> bool:
                 ocr_result.status = OcrStatus.FAILED
                 db.commit()
             logger.error("ocr_processing_error", extra={"error": str(e)})
+            if raise_errors:
+                raise
             return False
-
-        finally:
-            # 删除预处理临时文件（避免磁盘积累）
-            if enhanced_file != input_file and os.path.exists(enhanced_file):
-                try:
-                    os.remove(enhanced_file)
-                except OSError:
-                    pass
 
     finally:
         if close_db:
             db.close()
 
 
-def _index_ocr_to_chroma(ocr_result_id: int, text: str, image) -> None:
+def _index_ocr_to_chroma(
+    ocr_result_id: int,
+    text: str,
+    image,
+    pipeline_result: OcrPipelineResult,
+) -> None:
     """
     将 OCR 文本写入 ChromaDB 向量索引（基础版，无结构化元数据）。
     doc_id = image_{image_id}，保证每张图片在向量库中只有一条记录，
@@ -870,6 +836,9 @@ def _index_ocr_to_chroma(ocr_result_id: int, text: str, image) -> None:
             "ocr_result_id": ocr_result_id,
             "image_id": image.id,
             "filename": image.filename or "",
+            "ocr_confidence": pipeline_result.confidence,
+            "ocr_coverage": pipeline_result.coverage,
+            "ocr_engine": pipeline_result.engine,
             "structured_result_id": "",
             "time": "",
             "location": "",

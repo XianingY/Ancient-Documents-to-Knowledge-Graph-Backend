@@ -79,6 +79,19 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
         # 补充文件名信息（用于 RAG 元数据）
         if ocr_result.image:
             structured_data["filename"] = ocr_result.image.filename
+        try:
+            rejection_reasons = json.loads(ocr_result.rejection_reasons or "[]")
+        except (TypeError, json.JSONDecodeError):
+            rejection_reasons = [ocr_result.rejection_reasons]
+        structured_data["OCRQuality"] = {
+            "confidence": float(getattr(ocr_result, "confidence", 0.0) or 0.0),
+            "coverage": float(getattr(ocr_result, "coverage", 0.0) or 0.0),
+            "engine": getattr(ocr_result, "engine", None),
+            "human_corrected": bool(
+                getattr(ocr_result, "human_corrected", False)
+            ),
+            "rejection_reasons": rejection_reasons,
+        }
 
         # ③ 更新为 DONE 状态
         structured_result.content = json.dumps(structured_data, ensure_ascii=False)
@@ -122,6 +135,13 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
                 "ocr_result_id": ocr_result.id,
                 "image_id": image_id,
                 "filename": structured_data.get("filename", ""),
+                "ocr_confidence": float(
+                    getattr(ocr_result, "confidence", 0.0) or 0.0
+                ),
+                "ocr_coverage": float(
+                    getattr(ocr_result, "coverage", 0.0) or 0.0
+                ),
+                "ocr_engine": getattr(ocr_result, "engine", None) or "",
                 "time": _field("Time"),
                 "location": _field("Location"),
                 "seller": _field("Seller"),
