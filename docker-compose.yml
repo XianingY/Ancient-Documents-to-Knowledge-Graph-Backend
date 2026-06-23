@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -44,6 +42,33 @@ services:
       - backend
     restart: unless-stopped
     command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+
+  frontend:
+    build:
+      context: ./web
+    container_name: ancient_doc_frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  demo_seed:
+    profiles:
+      - demo
+    build: .
+    container_name: ancient_doc_demo_seed
+    volumes:
+      - ./database:/app/database
+      - ./pic:/app/pic
+      - ./.env:/app/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: "no"
+    command: python scripts/seed_demo_web.py --limit 12
 
 volumes:
   redis_data:

@@ -190,6 +190,22 @@ curl http://localhost:3000/api
 # 预期返回: {"status":"ok","version":"2.0.0"}
 ```
 
+### Web 展示端
+
+```bash
+# 初始化内置演示账号 demo_web / DemoWeb2026!
+python scripts/seed_demo_web.py
+
+# 本地开发：后端 3000 + 前端 5173
+cd web && npm install && npm run dev
+
+# Docker 演示：前端 8080，后端 3000
+docker-compose --profile demo run --rm demo_seed
+docker-compose up -d redis backend celery_worker frontend
+```
+
+Web 端支持图片上传、OCR 文本编辑保存、自动重新结构化分析、单文书/跨文档知识图谱和统计看板。默认前端 API 基址为 `/api`，生产容器通过 Nginx 代理到后端服务。
+
 ### API 文档
 
 启动服务后，可通过以下地址访问交互式 API 文档：
