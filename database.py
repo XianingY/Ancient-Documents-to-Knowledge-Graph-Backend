@@ -102,6 +102,7 @@ class OcrResult(Base):
     engine: Mapped[str | None] = mapped_column(String, nullable=True)
     model_versions: Mapped[str | None] = mapped_column(String, nullable=True)
     original_raw_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    corrected_text: Mapped[str | None] = mapped_column(String, nullable=True)
     segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
     corrected_segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
     correction_metadata_json: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -205,28 +206,60 @@ def _ensure_sqlite_ocr_result_columns():
             return
         if "confidence" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN confidence FLOAT DEFAULT 0.0"))
+            columns.add("confidence")
         if "coverage" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN coverage FLOAT DEFAULT 0.0"))
+            columns.add("coverage")
         if "engine" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN engine VARCHAR"))
+            columns.add("engine")
         if "model_versions" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN model_versions VARCHAR"))
+            columns.add("model_versions")
         if "original_raw_text" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN original_raw_text VARCHAR"))
+            columns.add("original_raw_text")
+        if "corrected_text" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN corrected_text VARCHAR"))
+            columns.add("corrected_text")
         if "segments_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN segments_json VARCHAR"))
+            columns.add("segments_json")
         if "corrected_segments_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN corrected_segments_json VARCHAR"))
+            columns.add("corrected_segments_json")
         if "correction_metadata_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN correction_metadata_json VARCHAR"))
+            columns.add("correction_metadata_json")
         if "rejection_reasons" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN rejection_reasons VARCHAR"))
+            columns.add("rejection_reasons")
         if "crop_bbox_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN crop_bbox_json VARCHAR"))
+            columns.add("crop_bbox_json")
         if "image_size_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN image_size_json VARCHAR"))
+            columns.add("image_size_json")
         if "human_corrected" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN human_corrected BOOLEAN DEFAULT 0"))
+            columns.add("human_corrected")
+        if {"corrected_text", "human_corrected", "raw_text", "original_raw_text"}.issubset(columns):
+            conn.execute(text("""
+                UPDATE ocr_result
+                SET corrected_text = raw_text,
+                    raw_text = original_raw_text
+                WHERE human_corrected = 1
+                  AND corrected_text IS NULL
+                  AND original_raw_text IS NOT NULL
+                  AND raw_text IS NOT NULL
+                  AND raw_text != original_raw_text
+            """))
+            conn.execute(text("""
+                UPDATE ocr_result
+                SET human_corrected = 0
+                WHERE human_corrected = 1
+                  AND corrected_text IS NULL
+            """))
 
 
 def init_db():

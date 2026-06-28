@@ -12,6 +12,7 @@ const baseOcr: OcrResult = {
   image_id: 2,
   raw_text: "立永賣\n孔□",
   original_raw_text: "立永賣\n孔□",
+  corrected_text: "立永賣\n孔珍",
   status: "done",
   confidence: 0.8,
   coverage: 0.7,

@@ -40,6 +40,7 @@ def test_update_ocr_result_preserves_model_quality_scores():
         image_id=3,
         raw_text="原始 OCR",
         original_raw_text=None,
+        corrected_text=None,
         status=SimpleNamespace(value="done"),
         confidence=0.42,
         coverage=0.58,
@@ -59,7 +60,7 @@ def test_update_ocr_result_preserves_model_quality_scores():
     response = asyncio.run(
         update_ocr_result(
             7,
-            UpdateOcrResultRequest(raw_text="人工修订文本"),
+            UpdateOcrResultRequest(corrected_text="人工修订文本"),
             user_id=1,
             db=db,
         )
@@ -67,10 +68,12 @@ def test_update_ocr_result_preserves_model_quality_scores():
 
     assert db.committed is True
     assert db.refreshed is ocr_result
-    assert ocr_result.raw_text == "人工修订文本"
+    assert ocr_result.raw_text == "原始 OCR"
     assert ocr_result.original_raw_text == "原始 OCR"
+    assert ocr_result.corrected_text == "人工修订文本"
     assert ocr_result.human_corrected is True
     assert ocr_result.confidence == 0.42
     assert ocr_result.coverage == 0.58
     assert response["data"]["confidence"] == 0.42
     assert response["data"]["coverage"] == 0.58
+    assert response["data"]["corrected_text"] == "人工修订文本"

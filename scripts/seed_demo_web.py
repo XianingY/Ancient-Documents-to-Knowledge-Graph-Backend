@@ -156,6 +156,7 @@ def _copy_bundle(
         engine=bundle.ocr_result.engine,
         model_versions=bundle.ocr_result.model_versions,
         original_raw_text=bundle.ocr_result.original_raw_text,
+        corrected_text=getattr(bundle.ocr_result, "corrected_text", None),
         segments_json=bundle.ocr_result.segments_json,
         corrected_segments_json=bundle.ocr_result.corrected_segments_json,
         correction_metadata_json=bundle.ocr_result.correction_metadata_json,

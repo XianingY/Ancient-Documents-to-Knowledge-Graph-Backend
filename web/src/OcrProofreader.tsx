@@ -6,9 +6,10 @@ import { bboxToPercent, segmentKey, segmentTone } from "./proofreading";
 type DocumentViewerProps = {
   imageUrl: string;
   imageTitle: string;
-  ocr: OcrResult | null;
-  selectedSegmentId: string | null;
-  onSelectSegment: (segmentId: string) => void;
+  ocr?: OcrResult | null;
+  selectedSegmentId?: string | null;
+  onSelectSegment?: (segmentId: string) => void;
+  showOcrOverlay?: boolean;
 };
 
 type SegmentProofreaderProps = {
@@ -30,9 +31,10 @@ function confidenceLabel(value?: number) {
 export function DocumentViewer({
   imageUrl,
   imageTitle,
-  ocr,
-  selectedSegmentId,
+  ocr = null,
+  selectedSegmentId = null,
   onSelectSegment,
+  showOcrOverlay = false,
 }: DocumentViewerProps) {
   const [naturalSize, setNaturalSize] = useState<number[]>([]);
   const [zoom, setZoom] = useState(1);
@@ -108,8 +110,9 @@ export function DocumentViewer({
               ])
             }
           />
-          <div className="ocr-overlay" aria-label="OCR segments">
-            {(ocr?.segments ?? []).map((segment, index) => {
+          {showOcrOverlay ? (
+            <div className="ocr-overlay" aria-label="OCR segments">
+              {(ocr?.segments ?? []).map((segment, index) => {
               const key = segmentKey(segment, index);
               const box = bboxToPercent(segment.image_bbox ?? segment.bbox, imageSize);
               if (!box) {
@@ -127,12 +130,13 @@ export function DocumentViewer({
                     height: percent(box.height),
                   }}
                   onPointerDown={(event) => event.stopPropagation()}
-                  onClick={() => onSelectSegment(key)}
+                  onClick={() => onSelectSegment?.(key)}
                   title={segment.text ?? ""}
                 />
               );
-            })}
-          </div>
+              })}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

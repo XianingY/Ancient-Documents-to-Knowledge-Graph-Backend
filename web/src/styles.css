@@ -285,6 +285,14 @@ button {
   gap: 14px;
 }
 
+.proofread-grid {
+  min-height: 0;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 0.9fr);
+  gap: 14px;
+}
+
 .content-wide {
   min-height: 0;
   padding: 18px;
@@ -301,6 +309,7 @@ button {
 .image-panel,
 .ocr-panel,
 .analysis-panel,
+.revision-panel,
 .chart-panel,
 .rank-list {
   min-height: 0;
@@ -311,7 +320,8 @@ button {
 
 .image-panel,
 .ocr-panel,
-.analysis-panel {
+.analysis-panel,
+.revision-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
@@ -333,6 +343,10 @@ button {
   font-size: 13px;
 }
 
+.section-head.compact h2 {
+  font-size: 15px;
+}
+
 .image-panel img {
   width: 100%;
   height: 100%;
@@ -343,7 +357,7 @@ button {
 }
 
 .ocr-panel {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .image-viewer {
@@ -427,12 +441,53 @@ button {
   box-shadow: 0 0 0 2px #0f8f78, 0 0 0 5px rgba(15, 143, 120, 0.24);
 }
 
-.ocr-panel textarea {
+.ocr-panel textarea,
+.revision-editor {
   min-height: 0;
   resize: none;
   padding: 14px;
   line-height: 1.7;
   font-size: 16px;
+}
+
+.ocr-readonly,
+.ocr-reference pre {
+  min-height: 0;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.75;
+  color: #1f2f2b;
+  background: #fbfdfc;
+  border: 1px solid #dfe7e3;
+  border-radius: 6px;
+}
+
+.revision-panel {
+  grid-template-rows: auto minmax(260px, 1fr) auto minmax(180px, 0.6fr);
+}
+
+.revision-editor {
+  width: 100%;
+  border: 1px solid #d5dfda;
+  background: #fff;
+  color: #1b2522;
+  outline: none;
+  border-radius: 6px;
+}
+
+.revision-editor:focus {
+  border-color: #239b82;
+  box-shadow: 0 0 0 3px rgba(35, 155, 130, 0.15);
+}
+
+.ocr-reference {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
 }
 
 .mode-switch {
@@ -713,6 +768,7 @@ button:disabled {
 
   .workspace,
   .document-grid,
+  .proofread-grid,
   .stats-layout {
     grid-template-columns: 1fr;
   }
@@ -724,13 +780,15 @@ button:disabled {
   }
 
   .document-grid,
+  .proofread-grid,
   .content-wide {
     overflow: auto;
   }
 
   .image-panel,
   .ocr-panel,
-  .analysis-panel {
+  .analysis-panel,
+  .revision-panel {
     min-height: 520px;
   }
 }
@@ -738,6 +796,7 @@ button:disabled {
 @media (max-width: 720px) {
   .login-shell,
   .document-grid,
+  .proofread-grid,
   .content-wide {
     padding: 10px;
   }

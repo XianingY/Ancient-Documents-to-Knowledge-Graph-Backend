@@ -44,11 +44,12 @@ describe("ApiClient", () => {
         data: {
           id: 9,
           image_id: 3,
-          raw_text: "修订文本",
+          raw_text: "原始文本",
           original_raw_text: "原始文本",
+          corrected_text: "修订文本",
           status: "done",
-          confidence: 1,
-          coverage: 1,
+          confidence: 0.42,
+          coverage: 0.58,
           segments: [],
           corrected_segments: [],
           rejection_reasons: [],
@@ -68,21 +69,22 @@ describe("ApiClient", () => {
     const headers = init.headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer token-abc");
     expect(headers.get("Content-Type")).toBe("application/json");
-    expect(init.body).toBe(JSON.stringify({ raw_text: "修订文本" }));
+    expect(init.body).toBe(JSON.stringify({ corrected_text: "修订文本" }));
   });
 
-  it("sends segment edits when saving OCR text", async () => {
+  it("sends corrected text without segment edits when saving OCR text", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         success: true,
         data: {
           id: 9,
           image_id: 3,
-          raw_text: "孔珍",
+          raw_text: "孔□",
           original_raw_text: "孔□",
+          corrected_text: "孔珍",
           status: "done",
-          confidence: 1,
-          coverage: 1,
+          confidence: 0.4,
+          coverage: 0.7,
           segments: [],
           corrected_segments: [{ segment_id: "s0001", text: "孔珍" }],
           rejection_reasons: [],
@@ -96,12 +98,11 @@ describe("ApiClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const api = new ApiClient("/api", "token-abc");
-    await api.updateOcrResult(9, "孔珍", [{ segment_id: "s0001", text: "孔珍" }]);
+    await api.updateOcrResult(9, "孔珍");
 
     expect((fetchMock.mock.calls[0][1].body as string)).toBe(
       JSON.stringify({
-        raw_text: "孔珍",
-        segment_edits: [{ segment_id: "s0001", text: "孔珍" }],
+        corrected_text: "孔珍",
       }),
     );
   });

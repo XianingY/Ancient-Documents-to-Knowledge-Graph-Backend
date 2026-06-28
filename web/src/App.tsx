@@ -27,15 +27,9 @@ import type {
   WorkflowProgress,
 } from "./types";
 import { saveOcrAndReanalyze } from "./workflow";
-import { DocumentViewer, SegmentProofreader } from "./OcrProofreader";
-import {
-  buildSegmentEdits,
-  composeTextFromSegments,
-  initialSegmentTexts,
-} from "./proofreading";
+import { DocumentViewer } from "./OcrProofreader";
 
-type Tab = "document" | "graph" | "multi" | "statistics";
-type EditMode = "segments" | "text";
+type Tab = "document" | "proofread" | "graph" | "multi" | "statistics";
 
 const TOKEN_KEY = "wenzhi_web_token";
 const CORE_FIELDS = [
@@ -218,10 +212,7 @@ export default function App() {
   const [imageUrl, setImageUrl] = useState<string>("");
   const imageUrlRef = useRef<string>("");
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
-  const [ocrText, setOcrText] = useState("");
-  const [segmentTexts, setSegmentTexts] = useState<Record<string, string>>({});
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState<EditMode>("segments");
+  const [correctedText, setCorrectedText] = useState("");
   const [structured, setStructured] = useState<StructuredResult | null>(null);
   const [graph, setGraph] = useState<RelationGraph | null>(null);
   const [multiGraph, setMultiGraph] = useState<MultiRelationGraph | null>(null);
@@ -255,8 +246,7 @@ export default function App() {
       setOcrResult(null);
       setStructured(null);
       setGraph(null);
-      setSegmentTexts({});
-      setSelectedSegmentId(null);
+      setCorrectedText("");
       try {
         if (imageUrlRef.current) {
           URL.revokeObjectURL(imageUrlRef.current);
@@ -274,11 +264,8 @@ export default function App() {
         }
 
         const ocr = await api.getOcrResult(ocrId);
-        const nextSegmentTexts = initialSegmentTexts(ocr);
         setOcrResult(ocr);
-        setSegmentTexts(nextSegmentTexts);
-        setSelectedSegmentId(Object.keys(nextSegmentTexts)[0] ?? null);
-        setOcrText(composeTextFromSegments(ocr, nextSegmentTexts) || (ocr.raw_text ?? ""));
+        setCorrectedText(ocr.corrected_text || ocr.raw_text || "");
 
         const structuredId = newest((await api.listStructuredResults(ocr.id)).ids);
         if (structuredId) {
@@ -319,6 +306,7 @@ export default function App() {
     setUser(null);
     setImages([]);
     setSelectedImageId(null);
+    setCorrectedText("");
   }
 
   async function upload(event: FormEvent<HTMLFormElement>) {
@@ -350,36 +338,22 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      const segmentEdits =
-        editMode === "segments" ? buildSegmentEdits(ocrResult, segmentTexts) : undefined;
       const result = await saveOcrAndReanalyze(
         api,
         ocrResult.id,
-        ocrText,
+        correctedText,
         (progress: WorkflowProgress) => setStatus(progress.message),
-        { segmentEdits },
       );
       setStructured(result.structured);
       setGraph(result.graph);
       const refreshed = await api.getOcrResult(ocrResult.id);
-      const nextSegmentTexts = initialSegmentTexts(refreshed);
       setOcrResult(refreshed);
-      setSegmentTexts(nextSegmentTexts);
-      setOcrText(composeTextFromSegments(refreshed, nextSegmentTexts) || (refreshed.raw_text ?? ""));
+      setCorrectedText(refreshed.corrected_text || refreshed.raw_text || "");
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setBusy(false);
     }
-  }
-
-  function changeSegmentText(segmentId: string, text: string) {
-    if (!ocrResult) {
-      return;
-    }
-    const next = { ...segmentTexts, [segmentId]: text };
-    setSegmentTexts(next);
-    setOcrText(composeTextFromSegments(ocrResult, next));
   }
 
   async function runMultiDocumentGraph() {
@@ -484,6 +458,9 @@ export default function App() {
           <button className={activeTab === "document" ? "active" : ""} onClick={() => setActiveTab("document")}>
             <FileText size={17} /> 文书
           </button>
+          <button className={activeTab === "proofread" ? "active" : ""} onClick={() => setActiveTab("proofread")}>
+            <Save size={17} /> 人工修订
+          </button>
           <button className={activeTab === "graph" ? "active" : ""} onClick={() => setActiveTab("graph")}>
             <GitBranch size={17} /> 单图谱
           </button>
@@ -546,6 +523,54 @@ export default function App() {
           <section className="content-wide statistics-content">
             <StatisticsView statistics={statistics} onRefresh={loadStatistics} />
           </section>
+        ) : activeTab === "proofread" ? (
+          <section className="proofread-grid">
+            <div className="image-panel">
+              <div className="section-head">
+                <div>
+                  <h2>{selectedImage ? displayTitle(selectedImage.title) : "文书原图"}</h2>
+                  <p>{selectedImage?.filename ?? ""}</p>
+                </div>
+              </div>
+              {imageUrl ? (
+                <DocumentViewer
+                  imageUrl={imageUrl}
+                  imageTitle={selectedImage ? displayTitle(selectedImage.title) : "文书图片"}
+                />
+              ) : (
+                <EmptyState title="未加载图片" text="从左侧选择一篇文书。" />
+              )}
+            </div>
+
+            <div className="revision-panel">
+              <div className="section-head">
+                <div>
+                  <h2>人工修订</h2>
+                  <p>{ocrResult?.human_corrected ? "已保存人工修订" : "尚未人工修订"}</p>
+                </div>
+                <button className="primary-button small" onClick={saveOcr} disabled={!ocrResult || busy}>
+                  {busy ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+                  保存并分析
+                </button>
+              </div>
+              <textarea
+                className="revision-editor"
+                value={correctedText}
+                onChange={(event) => setCorrectedText(event.target.value)}
+                placeholder="在此录入人工修订文本"
+              />
+              <QualityBar ocr={ocrResult} />
+              <div className="ocr-reference">
+                <div className="section-head compact">
+                  <div>
+                    <h2>OCR 原文对照</h2>
+                    <p>{ocrResult ? `${ocrResult.engine ?? "OCR"} · ${ocrResult.status}` : "未加载"}</p>
+                  </div>
+                </div>
+                <pre>{ocrResult?.raw_text || "暂无 OCR 文本"}</pre>
+              </div>
+            </div>
+          </section>
         ) : activeTab === "multi" ? (
           <section className="content-wide">
             <div className="section-head">
@@ -586,13 +611,10 @@ export default function App() {
                 </div>
               </div>
               {imageUrl ? (
-                <DocumentViewer
-                  imageUrl={imageUrl}
-                  imageTitle={selectedImage ? displayTitle(selectedImage.title) : "文书图片"}
-                  ocr={ocrResult}
-                  selectedSegmentId={selectedSegmentId}
-                  onSelectSegment={setSelectedSegmentId}
-                />
+                  <DocumentViewer
+                    imageUrl={imageUrl}
+                    imageTitle={selectedImage ? displayTitle(selectedImage.title) : "文书图片"}
+                  />
               ) : (
                 <EmptyState title="未加载图片" text="从左侧选择一篇文书。" />
               )}
@@ -604,30 +626,8 @@ export default function App() {
                   <h2>识别结果</h2>
                   <p>{ocrResult ? `${ocrResult.engine ?? "OCR"} · ${ocrResult.status}` : "未加载"}</p>
                 </div>
-                <button className="primary-button small" onClick={saveOcr} disabled={!ocrResult || busy}>
-                  {busy ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
-                  保存并分析
-                </button>
               </div>
-              <div className="mode-switch">
-                <button type="button" className={editMode === "segments" ? "active" : ""} onClick={() => setEditMode("segments")}>
-                  分段校对
-                </button>
-                <button type="button" className={editMode === "text" ? "active" : ""} onClick={() => setEditMode("text")}>
-                  全文编辑
-                </button>
-              </div>
-              {editMode === "segments" ? (
-                <SegmentProofreader
-                  ocr={ocrResult}
-                  segmentTexts={segmentTexts}
-                  selectedSegmentId={selectedSegmentId}
-                  onSelectSegment={setSelectedSegmentId}
-                  onChangeSegment={changeSegmentText}
-                />
-              ) : (
-                <textarea value={ocrText} onChange={(event) => setOcrText(event.target.value)} />
-              )}
+              <pre className="ocr-readonly">{ocrResult?.raw_text || "暂无 OCR 文本"}</pre>
               <QualityBar ocr={ocrResult} />
             </div>
 
@@ -680,11 +680,11 @@ function QualityBar({ ocr }: { ocr: OcrResult | null }) {
     <div className="quality-grid">
       <div>
         <span>OCR 置信度</span>
-        <strong>{corrected ? "已修订" : `${confidence}%`}</strong>
+        <strong>{confidence}%</strong>
       </div>
       <div>
         <span>OCR 覆盖率</span>
-        <strong>{corrected ? "已修订" : `${coverage}%`}</strong>
+        <strong>{coverage}%</strong>
       </div>
       <div>
         <span>人工修订</span>
