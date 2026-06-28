@@ -38,3 +38,12 @@ class TestOCRPipelineComposition:
         assert settings.ENSEMBLE_PASSES >= 1
         assert 0.0 < settings.ENSEMBLE_DOWNSCALE < 1.0
         assert settings.ENSEMBLE_NOISE_SIGMA > 0
+
+    @patch("app.services.ocr_service.settings")
+    def test_ocr_postprocess_preserves_visible_glyphs(self, mock_settings):
+        mock_settings.OCR_LLM_POST_CORRECTION_ENABLED = False
+        mock_settings.DASHSCOPE_API_KEY = "test-key"
+
+        from app.services.ocr_service import _correct_ocr_text
+
+        assert _correct_ocr_text("十万卖与") == "十万卖与"

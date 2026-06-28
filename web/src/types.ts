@@ -64,6 +64,7 @@ export type OcrResult = {
   image_id: number;
   raw_text: string;
   original_raw_text: string;
+  corrected_text?: string | null;
   status: string;
   confidence: number;
   coverage: number;

@@ -148,7 +148,8 @@ def _ocr_to_context_item(db: Session, ocr, user_id: int) -> dict:
         "time": "", "location": "", "seller": "",
         "buyer": "", "price": "", "subject": "",
     }
-    text = ocr.raw_text or ""
+    corrected = str(getattr(ocr, "corrected_text", "") or "").strip()
+    text = corrected if bool(getattr(ocr, "human_corrected", False)) and corrected else (ocr.raw_text or "")
 
     if struct and struct.content:
         try:

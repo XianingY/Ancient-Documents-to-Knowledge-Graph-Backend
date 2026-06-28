@@ -8,6 +8,7 @@ const ocr: OcrResult = {
   image_id: 2,
   raw_text: "孔□",
   original_raw_text: "孔□",
+  corrected_text: null,
   status: "done",
   confidence: 0.8,
   coverage: 0.7,
@@ -42,6 +43,7 @@ describe("OCR proofreading components", () => {
         ocr={ocr}
         selectedSegmentId={null}
         onSelectSegment={onSelect}
+        showOcrOverlay
       />,
     );
 
@@ -50,6 +52,14 @@ describe("OCR proofreading components", () => {
     fireEvent.click(box as Element);
 
     expect(onSelect).toHaveBeenCalledWith("s0001");
+  });
+
+  it("hides OCR boxes by default", () => {
+    const { container } = render(
+      <DocumentViewer imageUrl="blob:test" imageTitle="test" ocr={ocr} />,
+    );
+
+    expect(container.querySelector(".ocr-box")).toBeNull();
   });
 
   it("edits a segment and selects it on focus", () => {

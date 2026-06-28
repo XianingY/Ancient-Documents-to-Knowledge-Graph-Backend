@@ -32,6 +32,14 @@ from app.services.graph_service import (
     analyze_structured_result,
 )
 
+
+def _ocr_text_for_analysis(ocr_result: OcrResult) -> str:
+    corrected = str(getattr(ocr_result, "corrected_text", "") or "").strip()
+    if bool(getattr(ocr_result, "human_corrected", False)) and corrected:
+        return corrected
+    return str(getattr(ocr_result, "raw_text", "") or "").strip()
+
+
 async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
     """
     对OcrResult进行结构化分析。
@@ -43,7 +51,8 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
         logger.warning("ocr_result_not_found", extra={"ocr_result_id": ocr_result_id})
         return
 
-    if not ocr_result.raw_text:
+    analysis_text = _ocr_text_for_analysis(ocr_result)
+    if not analysis_text:
         logger.warning("ocr_result_no_text", extra={"ocr_result_id": ocr_result_id})
         return
 
@@ -74,7 +83,7 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
 
     try:
         # ② 调用 LLM 结构化提取
-        structured_data = await call_llm_for_structure(ocr_result.raw_text)
+        structured_data = await call_llm_for_structure(analysis_text)
 
         # 补充文件名信息（用于 RAG 元数据）
         if ocr_result.image:
@@ -89,6 +98,12 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
             "engine": getattr(ocr_result, "engine", None),
             "human_corrected": bool(
                 getattr(ocr_result, "human_corrected", False)
+            ),
+            "analysis_source": (
+                "corrected_text"
+                if bool(getattr(ocr_result, "human_corrected", False))
+                and str(getattr(ocr_result, "corrected_text", "") or "").strip()
+                else "raw_text"
             ),
             "rejection_reasons": rejection_reasons,
         }
@@ -112,7 +127,7 @@ async def analyze_ocr_result(ocr_result_id: int, db: Session) -> None:
                 v = str(structured_data.get(key, "")).strip()
                 return v if v not in _EMPTY else ""
 
-            parts = [ocr_result.raw_text]
+            parts = [analysis_text]
             fields = [
                 ("时间",   _field("Time")),
                 ("地点",   _field("Location")),

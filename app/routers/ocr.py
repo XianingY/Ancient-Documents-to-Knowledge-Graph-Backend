@@ -18,7 +18,8 @@ class SegmentEdit(BaseModel):
 
 
 class UpdateOcrResultRequest(BaseModel):
-    raw_text: str
+    raw_text: str | None = None
+    corrected_text: str | None = None
     segment_edits: list[SegmentEdit] | None = None
 
 
@@ -63,6 +64,7 @@ def _ocr_payload(ocr_result: OcrResult) -> dict:
         "raw_text": ocr_result.raw_text,
         "original_raw_text": getattr(ocr_result, "original_raw_text", None)
         or ocr_result.raw_text,
+        "corrected_text": getattr(ocr_result, "corrected_text", None),
         "status": ocr_result.status.value,
         "confidence": getattr(ocr_result, "confidence", 0.0),
         "coverage": getattr(ocr_result, "coverage", 0.0),
@@ -106,7 +108,10 @@ async def update_ocr_result(
     if not getattr(ocr_result, "original_raw_text", None):
         ocr_result.original_raw_text = ocr_result.raw_text
 
-    ocr_result.raw_text = request.raw_text
+    corrected_text = request.corrected_text if request.corrected_text is not None else request.raw_text
+    if corrected_text is None:
+        raise HTTPException(status_code=400, detail="corrected_text不能为空")
+
     if request.segment_edits is not None:
         corrected_segments = _merge_segment_edits(
             getattr(ocr_result, "corrected_segments_json", None),
@@ -117,6 +122,7 @@ async def update_ocr_result(
     else:
         correction_mode = "text"
 
+    ocr_result.corrected_text = corrected_text
     ocr_result.correction_metadata_json = _encode_json({
         "mode": correction_mode,
         "updated_at": get_beijing_time().isoformat(),

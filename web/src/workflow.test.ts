@@ -58,7 +58,7 @@ describe("saveOcrAndReanalyze", () => {
       { sleep: async () => undefined, maxAttempts: 5 },
     );
 
-    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "修订文本", undefined);
+    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "修订文本");
     expect(api.createStructuredResult).toHaveBeenCalledWith(1);
     expect(api.createRelationGraph).toHaveBeenCalledWith(11);
     expect(result.structured.id).toBe(11);
@@ -159,7 +159,7 @@ describe("saveOcrAndReanalyze", () => {
     expect(result.graph.id).toBe(31);
   });
 
-  it("sends segment edits when provided", async () => {
+  it("saves corrected text without segment edits", async () => {
     const api = {
       updateOcrResult: vi.fn().mockResolvedValue({ id: 1 }),
       createStructuredResult: vi.fn().mockResolvedValue({ success: true }),
@@ -191,14 +191,9 @@ describe("saveOcrAndReanalyze", () => {
     await saveOcrAndReanalyze(api, 1, "孔珍", vi.fn(), {
       sleep: async () => undefined,
       maxAttempts: 3,
-      segmentEdits: [{ segment_id: "s0001", text: "孔珍" }],
     });
 
-    expect(api.updateOcrResult).toHaveBeenCalledWith(
-      1,
-      "孔珍",
-      [{ segment_id: "s0001", text: "孔珍" }],
-    );
+    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "孔珍");
   });
 
   it("uses stable structured and graph endpoints", async () => {
