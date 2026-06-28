@@ -17,9 +17,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 在构建阶段缓存模型，避免第一次 OCR 请求临时下载。
+# 可选：在构建阶段缓存模型，避免第一次 OCR 请求临时下载。
+# 默认关闭，避免演示部署因模型源 DNS/网络波动导致镜像构建失败。
 COPY scripts/download_ocr_models.py scripts/download_ocr_models.py
-RUN python scripts/download_ocr_models.py
+ARG PRELOAD_OCR_MODELS=false
+RUN if [ "$PRELOAD_OCR_MODELS" = "true" ]; then python scripts/download_ocr_models.py; else echo "Skipping OCR model preload"; fi
 
 # 复制项目代码
 COPY . .

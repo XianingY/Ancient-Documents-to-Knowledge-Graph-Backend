@@ -675,19 +675,20 @@ function StructuredFields({ content }: { content: Record<string, unknown> }) {
 function QualityBar({ ocr }: { ocr: OcrResult | null }) {
   const confidence = Math.round((ocr?.confidence ?? 0) * 100);
   const coverage = Math.round((ocr?.coverage ?? 0) * 100);
+  const corrected = Boolean(ocr?.human_corrected);
   return (
     <div className="quality-grid">
       <div>
-        <span>置信度</span>
-        <strong>{confidence}%</strong>
+        <span>OCR 置信度</span>
+        <strong>{corrected ? "已修订" : `${confidence}%`}</strong>
       </div>
       <div>
-        <span>覆盖率</span>
-        <strong>{coverage}%</strong>
+        <span>OCR 覆盖率</span>
+        <strong>{corrected ? "已修订" : `${coverage}%`}</strong>
       </div>
       <div>
         <span>人工修订</span>
-        <strong>{ocr?.human_corrected ? "是" : "否"}</strong>
+        <strong>{corrected ? "是" : "否"}</strong>
       </div>
     </div>
   );
