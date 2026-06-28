@@ -157,15 +157,6 @@ export class ApiClient {
     return payload.data;
   }
 
-  async reanalyzeOcrResult(ocrId: number) {
-    return this.request<{ success: boolean; message: string }>(
-      `/ocr-results/${ocrId}/reanalyze`,
-      {
-        method: "POST",
-      },
-    );
-  }
-
   async createStructuredResult(ocrResultId: number) {
     return this.request<{ success: boolean; message: string }>("/structured-results", {
       method: "POST",
