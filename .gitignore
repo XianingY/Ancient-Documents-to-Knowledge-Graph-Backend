@@ -3,6 +3,15 @@ input/
 output/
 database/*.db
 upload/
+.DS_Store
+.omo/
+.opencode/
+ocr_eval*.json
+scripts/quick_*
+scripts/rerun_ocr_test.py
+scripts/test_ocr_improvement.py
+scripts/test_sample.json
+scripts/*_results.json
 
 # SSH 私钥（严禁提交）
 *.pem
