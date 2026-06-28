@@ -52,8 +52,13 @@ def _source_bundle(db, tmp_path: Path):
         coverage=0.7,
         engine="test_engine",
         model_versions="test_model",
-        segments_json='[{"text":"立永賣"}]',
+        original_raw_text="立永賣白田約人",
+        segments_json='[{"segment_id":"s0000","text":"立永賣","image_bbox":[1,2,3,4]}]',
+        corrected_segments_json='[{"segment_id":"s0000","text":"立永賣"}]',
+        correction_metadata_json='{"mode":"segments"}',
         rejection_reasons='["masked:model_disagreement"]',
+        crop_bbox_json="[0,0,800,600]",
+        image_size_json="[800,600]",
         human_corrected=False,
         created_at=get_beijing_time(),
     )
@@ -115,7 +120,11 @@ def test_seed_demo_web_is_idempotent_and_copies_files(tmp_path):
         assert demo_images[0].filename.startswith(DEMO_PREFIX)
         assert demo_images[0].path != source_image.path
         assert Path(demo_images[0].path).read_bytes() == b"demo image bytes"
-        assert db.query(OcrResult).filter(OcrResult.image_id == demo_images[0].id).count() == 1
+        copied_ocr = db.query(OcrResult).filter(OcrResult.image_id == demo_images[0].id).one()
+        assert copied_ocr.original_raw_text == "立永賣白田約人"
+        assert copied_ocr.corrected_segments_json == '[{"segment_id":"s0000","text":"立永賣"}]'
+        assert copied_ocr.crop_bbox_json == "[0,0,800,600]"
+        assert copied_ocr.image_size_json == "[800,600]"
     finally:
         db.close()
 
