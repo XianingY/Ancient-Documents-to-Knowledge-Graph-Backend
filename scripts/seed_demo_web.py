@@ -155,8 +155,13 @@ def _copy_bundle(
         coverage=bundle.ocr_result.coverage,
         engine=bundle.ocr_result.engine,
         model_versions=bundle.ocr_result.model_versions,
+        original_raw_text=bundle.ocr_result.original_raw_text,
         segments_json=bundle.ocr_result.segments_json,
+        corrected_segments_json=bundle.ocr_result.corrected_segments_json,
+        correction_metadata_json=bundle.ocr_result.correction_metadata_json,
         rejection_reasons=bundle.ocr_result.rejection_reasons,
+        crop_bbox_json=bundle.ocr_result.crop_bbox_json,
+        image_size_json=bundle.ocr_result.image_size_json,
         human_corrected=bundle.ocr_result.human_corrected,
         created_at=now,
     )
