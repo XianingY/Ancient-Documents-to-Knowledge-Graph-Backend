@@ -21,8 +21,13 @@ def test_init_db_ensures_ocr_metadata_columns():
     assert "coverage" in columns
     assert "engine" in columns
     assert "model_versions" in columns
+    assert "original_raw_text" in columns
     assert "segments_json" in columns
+    assert "corrected_segments_json" in columns
+    assert "correction_metadata_json" in columns
     assert "rejection_reasons" in columns
+    assert "crop_bbox_json" in columns
+    assert "image_size_json" in columns
     assert "human_corrected" in columns
 
 

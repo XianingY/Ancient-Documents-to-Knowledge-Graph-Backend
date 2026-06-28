@@ -101,8 +101,13 @@ class OcrResult(Base):
     coverage: Mapped[float] = mapped_column(default=0.0)
     engine: Mapped[str | None] = mapped_column(String, nullable=True)
     model_versions: Mapped[str | None] = mapped_column(String, nullable=True)
+    original_raw_text: Mapped[str | None] = mapped_column(String, nullable=True)
     segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    corrected_segments_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    correction_metadata_json: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reasons: Mapped[str | None] = mapped_column(String, nullable=True)
+    crop_bbox_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    image_size_json: Mapped[str | None] = mapped_column(String, nullable=True)
     human_corrected: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_beijing_time)
     
@@ -206,10 +211,20 @@ def _ensure_sqlite_ocr_result_columns():
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN engine VARCHAR"))
         if "model_versions" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN model_versions VARCHAR"))
+        if "original_raw_text" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN original_raw_text VARCHAR"))
         if "segments_json" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN segments_json VARCHAR"))
+        if "corrected_segments_json" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN corrected_segments_json VARCHAR"))
+        if "correction_metadata_json" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN correction_metadata_json VARCHAR"))
         if "rejection_reasons" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN rejection_reasons VARCHAR"))
+        if "crop_bbox_json" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN crop_bbox_json VARCHAR"))
+        if "image_size_json" not in columns:
+            conn.execute(text("ALTER TABLE ocr_result ADD COLUMN image_size_json VARCHAR"))
         if "human_corrected" not in columns:
             conn.execute(text("ALTER TABLE ocr_result ADD COLUMN human_corrected BOOLEAN DEFAULT 0"))
 

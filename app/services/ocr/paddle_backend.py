@@ -5,7 +5,7 @@ from typing import Any
 
 from app.core.config import settings
 
-from .consensus import build_consensus_result
+from .consensus import build_consensus_result, build_multiview_consensus_result
 from .preprocess import prepare_document_image
 from .types import OcrPipelineResult
 
@@ -136,6 +136,83 @@ def _small_rows(results: list[Any]) -> list[dict[str, Any]]:
 
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def _write_view(path: str, image: Any) -> str | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+    return path if cv2.imwrite(path, image) else None
+
+
+def _red_suppressed_image(image: Any) -> Any | None:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0]
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    mask = (((hue < 10) | (hue > 165)) & (saturation > 45) & (value > 50)).astype(np.uint8)
+    if float(mask.mean()) < 0.001:
+        return None
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray_bgr = cv2.cvtColor(cv2.medianBlur(gray, 5), cv2.COLOR_GRAY2BGR)
+    suppressed = image.copy()
+    suppressed[mask > 0] = gray_bgr[mask > 0]
+    return suppressed
+
+
+def _contrast_enhanced_image(image: Any) -> Any | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    lightness, channel_a, channel_b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced_lightness = clahe.apply(lightness)
+    enhanced = cv2.cvtColor(
+        cv2.merge([enhanced_lightness, channel_a, channel_b]),
+        cv2.COLOR_LAB2BGR,
+    )
+    blurred = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
+    return cv2.addWeighted(enhanced, 1.35, blurred, -0.35, 0)
+
+
+def _build_ocr_views(prepared_path: str, image: Any) -> list[dict[str, Any]]:
+    views = [{"name": "original", "path": prepared_path, "image": image}]
+    if not settings.OCR_MULTIVIEW_ENABLED:
+        return views
+
+    view_dir = os.path.dirname(prepared_path)
+    red_suppressed = _red_suppressed_image(image)
+    if red_suppressed is not None:
+        path = _write_view(os.path.join(view_dir, "document_no_red.jpg"), red_suppressed)
+        if path:
+            views.append({"name": "no_red", "path": path, "image": red_suppressed})
+
+    contrast_enhanced = _contrast_enhanced_image(image)
+    if contrast_enhanced is not None:
+        path = _write_view(os.path.join(view_dir, "document_contrast.jpg"), contrast_enhanced)
+        if path:
+            views.append({"name": "contrast", "path": path, "image": contrast_enhanced})
+
+    return views
+
+
+def _model_versions(tiny_recognizer: Any | None) -> str:
+    if tiny_recognizer is not None and settings.OCR_CHAR_RESCUE_ENABLED:
+        return "PP-OCRv6_medium_det+medium_rec+small_rec+tiny_rec_char_rescue"
+    if settings.OCR_CHAR_RESCUE_ENABLED:
+        return "PP-OCRv6_medium_det+medium_rec+small_rec+char_rescue"
+    return "PP-OCRv6_medium_det+medium_rec+small_rec"
 
 
 def _needs_char_rescue(
@@ -353,52 +430,63 @@ def run_paddle_consensus(image_path: str) -> OcrPipelineResult:
             raise OcrBackendUnavailable("OpenCV runtime is not installed") from exc
 
         with _inference_lock:
-            medium_results = list(medium_pipeline.predict(prepared.path))
-            if not medium_results:
-                return OcrPipelineResult(
-                    text="",
-                    confidence=0.0,
-                    coverage=0.0,
-                    engine="paddle_v6_consensus",
-                    model_versions="PP-OCRv6_medium_det+medium_rec+small_rec",
-                    rejection_reasons=["no_text_detected"],
-                    crop_bbox=prepared.crop_bbox,
-                )
-
-            payload = _result_payload(medium_results[0])
-            polygons = payload.get("rec_polys", [])
             image = cv2.imread(prepared.path)
             if image is None:
                 raise RuntimeError("Failed to read prepared OCR image")
-            crops = cropper(image, polygons) if polygons else []
-            medium_rows = _medium_rows(payload)
-            small_results = list(
-                small_recognizer.predict(
-                    crops,
-                    batch_size=settings.OCR_RECOGNITION_BATCH_SIZE,
+            view_results: list[OcrPipelineResult] = []
+            for view in _build_ocr_views(prepared.path, image):
+                medium_results = list(medium_pipeline.predict(view["path"]))
+                if not medium_results:
+                    continue
+                payload = _result_payload(medium_results[0])
+                polygons = payload.get("rec_polys", [])
+                crops = cropper(view["image"], polygons) if polygons else []
+                medium_rows = _medium_rows(payload)
+                small_results = list(
+                    small_recognizer.predict(
+                        crops,
+                        batch_size=settings.OCR_RECOGNITION_BATCH_SIZE,
+                    )
+                ) if crops else []
+                small_line_rows = _small_rows(small_results)
+                _attach_char_rescue(
+                    view["image"],
+                    medium_rows,
+                    small_line_rows,
+                    small_recognizer,
+                    tiny_recognizer,
                 )
-            ) if crops else []
-            small_line_rows = _small_rows(small_results)
-            _attach_char_rescue(
-                image,
-                medium_rows,
-                small_line_rows,
-                small_recognizer,
-                tiny_recognizer,
+                result = build_consensus_result(
+                    medium_rows,
+                    small_line_rows,
+                    prepared.prepared_size,
+                    prepared.crop_bbox,
+                    original_size=prepared.original_size,
+                    view_name=view["name"],
+                )
+                result.model_versions = _model_versions(tiny_recognizer)
+                view_results.append(result)
+
+        if not view_results:
+            return OcrPipelineResult(
+                text="",
+                confidence=0.0,
+                coverage=0.0,
+                engine="paddle_v6_consensus",
+                model_versions=_model_versions(tiny_recognizer),
+                rejection_reasons=["no_text_detected"],
+                crop_bbox=prepared.crop_bbox,
+                image_size=list(prepared.original_size),
             )
 
-        result = build_consensus_result(
-            medium_rows,
-            small_line_rows,
-            prepared.prepared_size,
-            prepared.crop_bbox,
-        )
-        if tiny_recognizer is not None and settings.OCR_CHAR_RESCUE_ENABLED:
-            result.model_versions = (
-                "PP-OCRv6_medium_det+medium_rec+small_rec+tiny_rec_char_rescue"
+        if settings.OCR_MULTIVIEW_ENABLED and len(view_results) > 1:
+            return build_multiview_consensus_result(
+                view_results,
+                prepared.prepared_size,
+                prepared.crop_bbox,
+                prepared.original_size,
             )
-        elif settings.OCR_CHAR_RESCUE_ENABLED:
-            result.model_versions = (
-                "PP-OCRv6_medium_det+medium_rec+small_rec+char_rescue"
-            )
+
+        result = view_results[0]
+        result.model_versions = _model_versions(tiny_recognizer)
         return result

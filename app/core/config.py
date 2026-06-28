@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     OCR_CHAR_RESCUE_MIN_SCORE: float = 0.45
     OCR_CHAR_RESCUE_MIN_LINE_CONFIDENCE: float = 0.70
     OCR_CHAR_RESCUE_MAX_LINE_CHARS: int = 48
+    OCR_MULTIVIEW_ENABLED: bool = True
+    OCR_LAYOUT_ORIENTATION: str = "auto"
+    OCR_LAYOUT_CLUSTER_IOU: float = 0.45
+    OCR_LAYOUT_SINGLE_VIEW_MAX_CHARS: int = 6
+    OCR_LAYOUT_SINGLE_VIEW_MIN_CONFIDENCE: float = 0.75
 
     @property
     def REDIS_URL(self) -> str:

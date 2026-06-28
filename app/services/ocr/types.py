@@ -12,3 +12,4 @@ class OcrPipelineResult:
     segments: list[dict[str, Any]] = field(default_factory=list)
     rejection_reasons: list[str] = field(default_factory=list)
     crop_bbox: list[int] | None = None
+    image_size: list[int] | None = None
