@@ -96,6 +96,7 @@ async def get_structured_relation_graphs(
     relation_graphs = (
         db.query(RelationGraph.id)
         .filter(RelationGraph.structured_result_id == structured_result_id)
+        .order_by(RelationGraph.id.desc())
         .offset(skip)
         .limit(limit)
         .all()

@@ -776,6 +776,7 @@ def ocr_image_by_id(
             cleaned_text = pipeline_result.text.strip() or "□"
 
             ocr_result.raw_text = cleaned_text
+            ocr_result.original_raw_text = cleaned_text
             ocr_result.confidence = pipeline_result.confidence
             ocr_result.coverage = pipeline_result.coverage
             ocr_result.engine = pipeline_result.engine
@@ -788,6 +789,14 @@ def ocr_image_by_id(
                 pipeline_result.rejection_reasons,
                 ensure_ascii=False,
             ) if pipeline_result.rejection_reasons else None
+            ocr_result.crop_bbox_json = json.dumps(
+                pipeline_result.crop_bbox,
+                ensure_ascii=False,
+            ) if pipeline_result.crop_bbox else None
+            ocr_result.image_size_json = json.dumps(
+                pipeline_result.image_size,
+                ensure_ascii=False,
+            ) if pipeline_result.image_size else None
             ocr_result.status = OcrStatus.DONE
             db.commit()
 

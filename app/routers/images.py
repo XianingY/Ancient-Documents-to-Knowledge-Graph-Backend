@@ -339,6 +339,7 @@ async def get_image_ocr_results(
     ocr_results = (
         db.query(OcrResult.id)
         .filter(OcrResult.image_id == image_id)
+        .order_by(OcrResult.id.desc())
         .offset(skip)
         .limit(limit)
         .all()

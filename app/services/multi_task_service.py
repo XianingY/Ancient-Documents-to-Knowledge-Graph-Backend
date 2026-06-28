@@ -128,7 +128,7 @@ def find_latest_structured_results_for_images(db: Session, image_ids: List[int],
 def get_multi_task_relation_ids(db: Session, multi_task_id: int, skip: int, limit: int) -> Tuple[List[int], int]:
     query = db.query(MultiRelationGraph.id).filter(MultiRelationGraph.multi_task_id == multi_task_id)
     total = query.count()
-    ids = query.offset(skip).limit(limit).all()
+    ids = query.order_by(MultiRelationGraph.id.desc()).offset(skip).limit(limit).all()
     return [i[0] for i in ids], total
 
 def get_multi_task_structured_result_ids(db: Session, multi_task_id: int) -> List[int]:
