@@ -2,6 +2,7 @@ from app.services.ocr.consensus import (
     build_consensus_result,
     build_multiview_consensus_result,
 )
+from app.core.config import settings
 
 
 def _row(text, score, bbox, **extra):
@@ -19,7 +20,8 @@ def _single_result(text, bbox, view="original", score=0.95):
     )
 
 
-def test_horizontal_layout_rows_sort_top_to_bottom_left_to_right():
+def test_horizontal_layout_rows_sort_top_to_bottom_left_to_right(monkeypatch):
+    monkeypatch.setattr(settings, "OCR_LAYOUT_ORIENTATION", "auto")
     result = build_consensus_result(
         [
             _row("下左", 0.95, [80, 220, 240, 260]),

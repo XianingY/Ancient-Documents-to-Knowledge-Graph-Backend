@@ -18,3 +18,7 @@ class TestOCRConfig:
 
     def test_ensemble_noise_sigma_default(self):
         assert settings.ENSEMBLE_NOISE_SIGMA > 0
+
+    def test_layout_ocr_defaults_preserve_stable_single_view_baseline(self):
+        assert settings.OCR_MULTIVIEW_ENABLED is False
+        assert settings.OCR_LAYOUT_ORIENTATION == "vertical"
