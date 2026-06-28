@@ -142,12 +142,28 @@ export class ApiClient {
     return payload.data;
   }
 
-  async updateOcrResult(ocrId: number, rawText: string) {
+  async updateOcrResult(
+    ocrId: number,
+    rawText: string,
+    segmentEdits?: Array<{ segment_id: string; text: string }>,
+  ) {
     const payload = await this.request<ApiEnvelope<OcrResult>>(`/ocr-results/${ocrId}`, {
       method: "PATCH",
-      body: JSON.stringify({ raw_text: rawText }),
+      body: JSON.stringify({
+        raw_text: rawText,
+        ...(segmentEdits ? { segment_edits: segmentEdits } : {}),
+      }),
     });
     return payload.data;
+  }
+
+  async reanalyzeOcrResult(ocrId: number) {
+    return this.request<{ success: boolean; message: string }>(
+      `/ocr-results/${ocrId}/reanalyze`,
+      {
+        method: "POST",
+      },
+    );
   }
 
   async createStructuredResult(ocrResultId: number) {

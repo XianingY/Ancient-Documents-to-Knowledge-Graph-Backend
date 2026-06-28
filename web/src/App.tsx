@@ -27,8 +27,15 @@ import type {
   WorkflowProgress,
 } from "./types";
 import { saveOcrAndReanalyze } from "./workflow";
+import { DocumentViewer, SegmentProofreader } from "./OcrProofreader";
+import {
+  buildSegmentEdits,
+  composeTextFromSegments,
+  initialSegmentTexts,
+} from "./proofreading";
 
 type Tab = "document" | "graph" | "multi" | "statistics";
+type EditMode = "segments" | "text";
 
 const TOKEN_KEY = "wenzhi_web_token";
 const CORE_FIELDS = [
@@ -212,6 +219,9 @@ export default function App() {
   const imageUrlRef = useRef<string>("");
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
   const [ocrText, setOcrText] = useState("");
+  const [segmentTexts, setSegmentTexts] = useState<Record<string, string>>({});
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState<EditMode>("segments");
   const [structured, setStructured] = useState<StructuredResult | null>(null);
   const [graph, setGraph] = useState<RelationGraph | null>(null);
   const [multiGraph, setMultiGraph] = useState<MultiRelationGraph | null>(null);
@@ -245,6 +255,8 @@ export default function App() {
       setOcrResult(null);
       setStructured(null);
       setGraph(null);
+      setSegmentTexts({});
+      setSelectedSegmentId(null);
       try {
         if (imageUrlRef.current) {
           URL.revokeObjectURL(imageUrlRef.current);
@@ -262,8 +274,11 @@ export default function App() {
         }
 
         const ocr = await api.getOcrResult(ocrId);
+        const nextSegmentTexts = initialSegmentTexts(ocr);
         setOcrResult(ocr);
-        setOcrText(ocr.raw_text ?? "");
+        setSegmentTexts(nextSegmentTexts);
+        setSelectedSegmentId(Object.keys(nextSegmentTexts)[0] ?? null);
+        setOcrText(composeTextFromSegments(ocr, nextSegmentTexts) || (ocr.raw_text ?? ""));
 
         const structuredId = newest((await api.listStructuredResults(ocr.id)).ids);
         if (structuredId) {
@@ -335,20 +350,36 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      const segmentEdits =
+        editMode === "segments" ? buildSegmentEdits(ocrResult, segmentTexts) : undefined;
       const result = await saveOcrAndReanalyze(
         api,
         ocrResult.id,
         ocrText,
         (progress: WorkflowProgress) => setStatus(progress.message),
+        { segmentEdits },
       );
       setStructured(result.structured);
       setGraph(result.graph);
-      setOcrResult(await api.getOcrResult(ocrResult.id));
+      const refreshed = await api.getOcrResult(ocrResult.id);
+      const nextSegmentTexts = initialSegmentTexts(refreshed);
+      setOcrResult(refreshed);
+      setSegmentTexts(nextSegmentTexts);
+      setOcrText(composeTextFromSegments(refreshed, nextSegmentTexts) || (refreshed.raw_text ?? ""));
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setBusy(false);
     }
+  }
+
+  function changeSegmentText(segmentId: string, text: string) {
+    if (!ocrResult) {
+      return;
+    }
+    const next = { ...segmentTexts, [segmentId]: text };
+    setSegmentTexts(next);
+    setOcrText(composeTextFromSegments(ocrResult, next));
   }
 
   async function runMultiDocumentGraph() {
@@ -554,7 +585,17 @@ export default function App() {
                   <p>{selectedImage?.filename ?? ""}</p>
                 </div>
               </div>
-              {imageUrl ? <img src={imageUrl} alt={selectedImage ? displayTitle(selectedImage.title) : "文书图片"} /> : <EmptyState title="未加载图片" text="从左侧选择一篇文书。" />}
+              {imageUrl ? (
+                <DocumentViewer
+                  imageUrl={imageUrl}
+                  imageTitle={selectedImage ? displayTitle(selectedImage.title) : "文书图片"}
+                  ocr={ocrResult}
+                  selectedSegmentId={selectedSegmentId}
+                  onSelectSegment={setSelectedSegmentId}
+                />
+              ) : (
+                <EmptyState title="未加载图片" text="从左侧选择一篇文书。" />
+              )}
             </div>
 
             <div className="ocr-panel">
@@ -568,7 +609,25 @@ export default function App() {
                   保存并分析
                 </button>
               </div>
-              <textarea value={ocrText} onChange={(event) => setOcrText(event.target.value)} />
+              <div className="mode-switch">
+                <button type="button" className={editMode === "segments" ? "active" : ""} onClick={() => setEditMode("segments")}>
+                  分段校对
+                </button>
+                <button type="button" className={editMode === "text" ? "active" : ""} onClick={() => setEditMode("text")}>
+                  全文编辑
+                </button>
+              </div>
+              {editMode === "segments" ? (
+                <SegmentProofreader
+                  ocr={ocrResult}
+                  segmentTexts={segmentTexts}
+                  selectedSegmentId={selectedSegmentId}
+                  onSelectSegment={setSelectedSegmentId}
+                  onChangeSegment={changeSegmentText}
+                />
+              ) : (
+                <textarea value={ocrText} onChange={(event) => setOcrText(event.target.value)} />
+              )}
               <QualityBar ocr={ocrResult} />
             </div>
 
