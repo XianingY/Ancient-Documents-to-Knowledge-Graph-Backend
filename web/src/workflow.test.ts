@@ -11,7 +11,7 @@ describe("saveOcrAndReanalyze", () => {
         .mockResolvedValueOnce({ ids: [10] })
         .mockResolvedValueOnce({ ids: [10] })
         .mockResolvedValueOnce({ ids: [10, 11] }),
-      createStructuredResult: vi.fn().mockResolvedValue({ success: true }),
+      reanalyzeOcrResult: vi.fn().mockResolvedValue({ success: true }),
       getStructuredResult: vi
         .fn()
         .mockResolvedValueOnce({
@@ -40,7 +40,6 @@ describe("saveOcrAndReanalyze", () => {
         .mockResolvedValueOnce({ ids: [] })
         .mockResolvedValueOnce({ ids: [] })
         .mockResolvedValueOnce({ ids: [21] }),
-      createRelationGraph: vi.fn().mockResolvedValue({ success: true }),
       getRelationGraph: vi.fn().mockResolvedValue({
         id: 21,
         structured_result_id: 11,
@@ -58,9 +57,8 @@ describe("saveOcrAndReanalyze", () => {
       { sleep: async () => undefined, maxAttempts: 5 },
     );
 
-    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "修订文本");
-    expect(api.createStructuredResult).toHaveBeenCalledWith(1);
-    expect(api.createRelationGraph).toHaveBeenCalledWith(11);
+    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "修订文本", undefined);
+    expect(api.reanalyzeOcrResult).toHaveBeenCalledWith(1);
     expect(result.structured.id).toBe(11);
     expect(result.graph.id).toBe(21);
     expect(progress).toEqual(["saving", "structured", "graph", "done"]);
@@ -73,7 +71,7 @@ describe("saveOcrAndReanalyze", () => {
         .fn()
         .mockResolvedValueOnce({ ids: [] })
         .mockResolvedValueOnce({ ids: [11] }),
-      createStructuredResult: vi.fn().mockResolvedValue({ success: true }),
+      reanalyzeOcrResult: vi.fn().mockResolvedValue({ success: true }),
       getStructuredResult: vi.fn().mockResolvedValue({
         id: 11,
         ocr_result_id: 1,
@@ -82,7 +80,6 @@ describe("saveOcrAndReanalyze", () => {
         created_at: "2026-01-01T00:00:00",
       }),
       listRelationGraphs: vi.fn(),
-      createRelationGraph: vi.fn(),
       getRelationGraph: vi.fn(),
     };
 
@@ -92,7 +89,7 @@ describe("saveOcrAndReanalyze", () => {
         maxAttempts: 2,
       }),
     ).rejects.toThrow("结构化分析失败");
-    expect(api.createRelationGraph).not.toHaveBeenCalled();
+    expect(api.listRelationGraphs).not.toHaveBeenCalled();
   });
 
   it("accepts refreshed records when backend reuses ids", async () => {
@@ -103,7 +100,7 @@ describe("saveOcrAndReanalyze", () => {
         .mockResolvedValueOnce({ ids: [11] })
         .mockResolvedValueOnce({ ids: [11] })
         .mockResolvedValueOnce({ ids: [11] }),
-      createStructuredResult: vi.fn().mockResolvedValue({ success: true }),
+      reanalyzeOcrResult: vi.fn().mockResolvedValue({ success: true }),
       getStructuredResult: vi
         .fn()
         .mockResolvedValueOnce({
@@ -131,7 +128,6 @@ describe("saveOcrAndReanalyze", () => {
         .fn()
         .mockResolvedValueOnce({ ids: [31] })
         .mockResolvedValueOnce({ ids: [31] }),
-      createRelationGraph: vi.fn().mockResolvedValue({ success: true }),
       getRelationGraph: vi
         .fn()
         .mockResolvedValueOnce({
@@ -157,6 +153,46 @@ describe("saveOcrAndReanalyze", () => {
 
     expect(result.structured.id).toBe(11);
     expect(result.graph.id).toBe(31);
-    expect(api.createRelationGraph).toHaveBeenCalledWith(11);
+  });
+
+  it("sends segment edits when provided", async () => {
+    const api = {
+      updateOcrResult: vi.fn().mockResolvedValue({ id: 1 }),
+      reanalyzeOcrResult: vi.fn().mockResolvedValue({ success: true }),
+      listStructuredResults: vi
+        .fn()
+        .mockResolvedValueOnce({ ids: [] })
+        .mockResolvedValueOnce({ ids: [11] }),
+      getStructuredResult: vi.fn().mockResolvedValue({
+        id: 11,
+        ocr_result_id: 1,
+        content: {},
+        status: "done",
+        created_at: "2026-01-01T00:00:00",
+      }),
+      listRelationGraphs: vi
+        .fn()
+        .mockResolvedValueOnce({ ids: [] })
+        .mockResolvedValueOnce({ ids: [21] }),
+      getRelationGraph: vi.fn().mockResolvedValue({
+        id: 21,
+        structured_result_id: 11,
+        content: {},
+        status: "done",
+        created_at: "2026-01-01T00:00:00",
+      }),
+    };
+
+    await saveOcrAndReanalyze(api, 1, "孔珍", vi.fn(), {
+      sleep: async () => undefined,
+      maxAttempts: 3,
+      segmentEdits: [{ segment_id: "s0001", text: "孔珍" }],
+    });
+
+    expect(api.updateOcrResult).toHaveBeenCalledWith(
+      1,
+      "孔珍",
+      [{ segment_id: "s0001", text: "孔珍" }],
+    );
   });
 });

@@ -36,26 +36,45 @@ export type PagedIds<T = unknown> = {
 };
 
 export type OcrSegment = {
+  segment_id?: string;
   bbox?: number[];
+  image_bbox?: number[];
+  image_poly?: number[][];
   text?: string;
   status?: string;
   confidence?: number;
   rejection_reasons?: string[];
   medium_text?: string;
   small_text?: string;
+  source_views?: string[];
+  source_count?: number;
+  order_index?: number;
+  layout_orientation?: string;
+  candidate_texts?: Array<Record<string, unknown>>;
+};
+
+export type CorrectedSegment = {
+  segment_id: string;
+  text: string;
+  updated_at?: string;
 };
 
 export type OcrResult = {
   id: number;
   image_id: number;
   raw_text: string;
+  original_raw_text: string;
   status: string;
   confidence: number;
   coverage: number;
   engine?: string | null;
   model_versions?: string | null;
   segments: OcrSegment[];
+  corrected_segments: CorrectedSegment[];
+  correction_metadata?: Record<string, unknown>;
   rejection_reasons: string[];
+  crop_bbox: number[];
+  image_size: number[];
   human_corrected: boolean;
   created_at: string;
 };

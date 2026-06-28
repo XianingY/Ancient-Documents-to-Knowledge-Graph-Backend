@@ -45,11 +45,15 @@ describe("ApiClient", () => {
           id: 9,
           image_id: 3,
           raw_text: "修订文本",
+          original_raw_text: "原始文本",
           status: "done",
           confidence: 1,
           coverage: 1,
           segments: [],
+          corrected_segments: [],
           rejection_reasons: [],
+          crop_bbox: [],
+          image_size: [],
           human_corrected: true,
           created_at: "2026-01-01T00:00:00",
         },
@@ -65,6 +69,47 @@ describe("ApiClient", () => {
     expect(headers.get("Authorization")).toBe("Bearer token-abc");
     expect(headers.get("Content-Type")).toBe("application/json");
     expect(init.body).toBe(JSON.stringify({ raw_text: "修订文本" }));
+  });
+
+  it("sends segment edits and can trigger reanalysis", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: {
+            id: 9,
+            image_id: 3,
+            raw_text: "孔珍",
+            original_raw_text: "孔□",
+            status: "done",
+            confidence: 1,
+            coverage: 1,
+            segments: [],
+            corrected_segments: [{ segment_id: "s0001", text: "孔珍" }],
+            rejection_reasons: [],
+            crop_bbox: [],
+            image_size: [],
+            human_corrected: true,
+            created_at: "2026-01-01T00:00:00",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: "queued" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient("/api", "token-abc");
+    await api.updateOcrResult(9, "孔珍", [{ segment_id: "s0001", text: "孔珍" }]);
+    await api.reanalyzeOcrResult(9);
+
+    expect((fetchMock.mock.calls[0][1].body as string)).toBe(
+      JSON.stringify({
+        raw_text: "孔珍",
+        segment_edits: [{ segment_id: "s0001", text: "孔珍" }],
+      }),
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/ocr-results/9/reanalyze");
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({ method: "POST" }));
   });
 
   it("raises ApiError with backend detail", async () => {
