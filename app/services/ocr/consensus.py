@@ -131,6 +131,12 @@ def _sort_segments_by_layout(
     if not segments:
         return [], _detect_layout_orientation([], image_size)
 
+    configured = getattr(settings, "OCR_LAYOUT_ORIENTATION", "auto")
+    if configured == "vertical":
+        return sorted(segments, key=lambda item: (-item["bbox"][0], item["bbox"][1])), "vertical"
+    if configured == "horizontal":
+        return sorted(segments, key=lambda item: (item["bbox"][1], item["bbox"][0])), "horizontal"
+
     orientation = _detect_layout_orientation(segments, image_size)
     widths = [max(1, segment["bbox"][2] - segment["bbox"][0]) for segment in segments]
     heights = [max(1, segment["bbox"][3] - segment["bbox"][1]) for segment in segments]
