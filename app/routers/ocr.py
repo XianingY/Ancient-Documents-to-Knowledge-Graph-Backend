@@ -122,8 +122,6 @@ async def update_ocr_result(
         "updated_at": get_beijing_time().isoformat(),
         "edit_count": len(request.segment_edits or []),
     })
-    ocr_result.confidence = 1.0
-    ocr_result.coverage = 1.0
     ocr_result.human_corrected = True
     db.commit()
     db.refresh(ocr_result)
