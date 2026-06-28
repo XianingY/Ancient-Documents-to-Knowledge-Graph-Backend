@@ -47,9 +47,10 @@ export async function saveOcrAndReanalyze(
   api: Pick<
     ApiClient,
     | "updateOcrResult"
-    | "reanalyzeOcrResult"
+    | "createStructuredResult"
     | "listStructuredResults"
     | "getStructuredResult"
+    | "createRelationGraph"
     | "listRelationGraphs"
     | "getRelationGraph"
   >,
@@ -69,7 +70,7 @@ export async function saveOcrAndReanalyze(
   await api.updateOcrResult(ocrId, rawText, options.segmentEdits);
 
   onProgress({ stage: "structured", message: "正在重新提取结构化字段" });
-  await api.reanalyzeOcrResult(ocrId);
+  await api.createStructuredResult(ocrId);
   const structured = await pollForCompletedRefresh(
     async () => (await api.listStructuredResults(ocrId)).ids,
     (id) => api.getStructuredResult(id),
@@ -84,6 +85,7 @@ export async function saveOcrAndReanalyze(
   const beforeGraphId = newestId((await api.listRelationGraphs(structured.id)).ids);
   const beforeGraph = beforeGraphId ? await api.getRelationGraph(beforeGraphId) : null;
   onProgress({ stage: "graph", message: "正在生成知识图谱" });
+  await api.createRelationGraph(structured.id);
   const graph = await pollForCompletedRefresh(
     async () => (await api.listRelationGraphs(structured.id)).ids,
     (id) => api.getRelationGraph(id),
