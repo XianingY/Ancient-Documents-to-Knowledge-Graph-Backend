@@ -4,8 +4,14 @@ import os
 import time
 from typing import Optional
 
+# 需要真实后端服务的联调用例；默认 pytest 配置会跳过该目录。
+pytestmark = pytest.mark.live_api
+
 # API 基础 URL
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = os.getenv(
+    "API_TEST_BASE_URL",
+    "http://localhost:3000/api/v1",
+)
 
 # 测试数据
 TEST_USERNAME = "test_user"

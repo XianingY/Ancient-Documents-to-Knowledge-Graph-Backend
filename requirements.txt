@@ -42,6 +42,7 @@ bcrypt==4.0.1
 # 图片与本地 OCR
 pillow==12.1.1
 numpy==2.3.5
+scipy==1.18.1
 opencv-contrib-python==4.10.0.84
 paddlepaddle==3.3.1; sys_platform == "darwin"
 paddlepaddle==3.3.1; sys_platform == "linux" and platform_machine == "x86_64"
