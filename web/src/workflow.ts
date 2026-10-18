@@ -1,4 +1,5 @@
 import type { ApiClient } from "./api";
+import type { SegmentEditPayload } from "./proofreading";
 import type { RelationGraph, StructuredResult, WorkflowProgress } from "./types";
 
 type Sleep = (ms: number) => Promise<void>;
@@ -56,7 +57,11 @@ export async function saveOcrAndReanalyze(
   ocrId: number,
   correctedText: string,
   onProgress: (progress: WorkflowProgress) => void,
-  options: { sleep?: Sleep; maxAttempts?: number } = {},
+  options: {
+    sleep?: Sleep;
+    maxAttempts?: number;
+    segmentEdits?: SegmentEditPayload[];
+  } = {},
 ): Promise<ReanalysisResult> {
   const sleep = options.sleep ?? defaultSleep;
   const maxAttempts = options.maxAttempts ?? 40;
@@ -66,7 +71,12 @@ export async function saveOcrAndReanalyze(
     ? await api.getStructuredResult(beforeStructuredId)
     : null;
   onProgress({ stage: "saving", message: "正在保存 OCR 修订" });
-  await api.updateOcrResult(ocrId, correctedText);
+  const segmentEdits = options.segmentEdits ?? [];
+  if (segmentEdits.length) {
+    await api.updateOcrResult(ocrId, correctedText, segmentEdits);
+  } else {
+    await api.updateOcrResult(ocrId, correctedText);
+  }
 
   onProgress({ stage: "structured", message: "正在重新提取结构化字段" });
   await api.createStructuredResult(ocrId);

@@ -27,7 +27,12 @@ import type {
   WorkflowProgress,
 } from "./types";
 import { saveOcrAndReanalyze } from "./workflow";
-import { DocumentViewer } from "./OcrProofreader";
+import { DocumentViewer, SegmentProofreader } from "./OcrProofreader";
+import {
+  buildSegmentEdits,
+  composeTextFromSegments,
+  initialSegmentTexts,
+} from "./proofreading";
 
 type Tab = "document" | "proofread" | "graph" | "multi" | "statistics";
 
@@ -213,6 +218,8 @@ export default function App() {
   const imageUrlRef = useRef<string>("");
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
   const [correctedText, setCorrectedText] = useState("");
+  const [segmentTexts, setSegmentTexts] = useState<Record<string, string>>({});
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [structured, setStructured] = useState<StructuredResult | null>(null);
   const [graph, setGraph] = useState<RelationGraph | null>(null);
   const [multiGraph, setMultiGraph] = useState<MultiRelationGraph | null>(null);
@@ -247,6 +254,8 @@ export default function App() {
       setStructured(null);
       setGraph(null);
       setCorrectedText("");
+      setSegmentTexts({});
+      setSelectedSegmentId(null);
       try {
         if (imageUrlRef.current) {
           URL.revokeObjectURL(imageUrlRef.current);
@@ -266,6 +275,8 @@ export default function App() {
         const ocr = await api.getOcrResult(ocrId);
         setOcrResult(ocr);
         setCorrectedText(ocr.corrected_text || ocr.raw_text || "");
+        setSegmentTexts(initialSegmentTexts(ocr));
+        setSelectedSegmentId(null);
 
         const structuredId = newest((await api.listStructuredResults(ocr.id)).ids);
         if (structuredId) {
@@ -307,6 +318,8 @@ export default function App() {
     setImages([]);
     setSelectedImageId(null);
     setCorrectedText("");
+    setSegmentTexts({});
+    setSelectedSegmentId(null);
   }
 
   async function upload(event: FormEvent<HTMLFormElement>) {
@@ -338,17 +351,25 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
+      const hasSegments = ocrResult.segments.length > 0;
+      const nextText = hasSegments
+        ? composeTextFromSegments(ocrResult, segmentTexts)
+        : correctedText;
+      const segmentEdits = hasSegments ? buildSegmentEdits(ocrResult, segmentTexts) : [];
       const result = await saveOcrAndReanalyze(
         api,
         ocrResult.id,
-        correctedText,
+        nextText,
         (progress: WorkflowProgress) => setStatus(progress.message),
+        segmentEdits.length ? { segmentEdits } : undefined,
       );
       setStructured(result.structured);
       setGraph(result.graph);
       const refreshed = await api.getOcrResult(ocrResult.id);
       setOcrResult(refreshed);
       setCorrectedText(refreshed.corrected_text || refreshed.raw_text || "");
+      setSegmentTexts(initialSegmentTexts(refreshed));
+      setSelectedSegmentId(null);
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -395,6 +416,15 @@ export default function App() {
         ? current.filter((id) => id !== imageId)
         : [...current, imageId],
     );
+  }
+
+  function changeSegment(segmentId: string, text: string) {
+    if (!ocrResult) {
+      return;
+    }
+    const nextTexts = { ...segmentTexts, [segmentId]: text };
+    setSegmentTexts(nextTexts);
+    setCorrectedText(composeTextFromSegments(ocrResult, nextTexts));
   }
 
   useEffect(() => {
@@ -536,6 +566,10 @@ export default function App() {
                 <DocumentViewer
                   imageUrl={imageUrl}
                   imageTitle={selectedImage ? displayTitle(selectedImage.title) : "文书图片"}
+                  ocr={ocrResult}
+                  selectedSegmentId={selectedSegmentId}
+                  onSelectSegment={setSelectedSegmentId}
+                  showOcrOverlay
                 />
               ) : (
                 <EmptyState title="未加载图片" text="从左侧选择一篇文书。" />
@@ -553,12 +587,22 @@ export default function App() {
                   保存并分析
                 </button>
               </div>
-              <textarea
-                className="revision-editor"
-                value={correctedText}
-                onChange={(event) => setCorrectedText(event.target.value)}
-                placeholder="在此录入人工修订文本"
-              />
+              {ocrResult?.segments.length ? (
+                <SegmentProofreader
+                  ocr={ocrResult}
+                  segmentTexts={segmentTexts}
+                  selectedSegmentId={selectedSegmentId}
+                  onSelectSegment={setSelectedSegmentId}
+                  onChangeSegment={changeSegment}
+                />
+              ) : (
+                <textarea
+                  className="revision-editor"
+                  value={correctedText}
+                  onChange={(event) => setCorrectedText(event.target.value)}
+                  placeholder="在此录入人工修订文本"
+                />
+              )}
               <QualityBar ocr={ocrResult} />
               <div className="ocr-reference">
                 <div className="section-head compact">

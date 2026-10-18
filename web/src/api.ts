@@ -10,6 +10,7 @@ import type {
   StructuredResult,
   UserInfo,
 } from "./types";
+import type { SegmentEditPayload } from "./proofreading";
 
 export const DEMO_USERNAME = "demo_web";
 export const DEMO_PASSWORD = "DemoWeb2026!";
@@ -142,12 +143,20 @@ export class ApiClient {
     return payload.data;
   }
 
-  async updateOcrResult(ocrId: number, correctedText: string) {
+  async updateOcrResult(
+    ocrId: number,
+    correctedText: string,
+    segmentEdits?: SegmentEditPayload[],
+  ) {
+    const body: { corrected_text: string; segment_edits?: SegmentEditPayload[] } = {
+      corrected_text: correctedText,
+    };
+    if (segmentEdits?.length) {
+      body.segment_edits = segmentEdits;
+    }
     const payload = await this.request<ApiEnvelope<OcrResult>>(`/ocr-results/${ocrId}`, {
       method: "PATCH",
-      body: JSON.stringify({
-        corrected_text: correctedText,
-      }),
+      body: JSON.stringify(body),
     });
     return payload.data;
   }

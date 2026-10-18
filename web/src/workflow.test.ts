@@ -196,6 +196,45 @@ describe("saveOcrAndReanalyze", () => {
     expect(api.updateOcrResult).toHaveBeenCalledWith(1, "孔珍");
   });
 
+  it("sends segment edits with the OCR correction", async () => {
+    const segmentEdits = [{ segment_id: "s0001", text: "孔珍" }];
+    const api = {
+      updateOcrResult: vi.fn().mockResolvedValue({ id: 1 }),
+      createStructuredResult: vi.fn().mockResolvedValue({ success: true }),
+      listStructuredResults: vi
+        .fn()
+        .mockResolvedValueOnce({ ids: [] })
+        .mockResolvedValueOnce({ ids: [11] }),
+      getStructuredResult: vi.fn().mockResolvedValue({
+        id: 11,
+        ocr_result_id: 1,
+        content: {},
+        status: "done",
+        created_at: "2026-01-01T00:00:00",
+      }),
+      listRelationGraphs: vi
+        .fn()
+        .mockResolvedValueOnce({ ids: [] })
+        .mockResolvedValueOnce({ ids: [21] }),
+      createRelationGraph: vi.fn().mockResolvedValue({ success: true }),
+      getRelationGraph: vi.fn().mockResolvedValue({
+        id: 21,
+        structured_result_id: 11,
+        content: {},
+        status: "done",
+        created_at: "2026-01-01T00:00:00",
+      }),
+    };
+
+    await saveOcrAndReanalyze(api, 1, "立永賣\n孔珍", vi.fn(), {
+      sleep: async () => undefined,
+      maxAttempts: 3,
+      segmentEdits,
+    });
+
+    expect(api.updateOcrResult).toHaveBeenCalledWith(1, "立永賣\n孔珍", segmentEdits);
+  });
+
   it("uses stable structured and graph endpoints", async () => {
     const progress: string[] = [];
     const api = {
