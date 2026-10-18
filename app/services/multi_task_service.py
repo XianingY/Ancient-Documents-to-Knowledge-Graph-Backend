@@ -1,7 +1,16 @@
 
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
-from database import MultiTask, MultiTaskStructuredResult, StructuredResult, MultiRelationGraph, Image, OcrResult, get_beijing_time
+from database import (
+    MultiTask,
+    MultiTaskStructuredResult,
+    StructuredResult,
+    MultiRelationGraph,
+    Image,
+    OcrResult,
+    OcrStatus,
+    get_beijing_time,
+)
 
 class MultiTaskServiceError(Exception):
     """Base exception for multi task service"""
@@ -104,18 +113,14 @@ def find_latest_structured_results_for_images(db: Session, image_ids: List[int],
         if user_id is not None and image.user_id != user_id:
             raise PermissionDeniedError(f"Image {image_id} does not belong to the current user")
         
-        latest_ocr = (
-            db.query(OcrResult)
-            .filter(OcrResult.image_id == image_id)
-            .order_by(OcrResult.id.desc())
-            .first()
-        )
-        if not latest_ocr:
-            raise ResourceNotFoundError(f"Image {image_id} has no OCR results")
-        
         latest_structured = (
             db.query(StructuredResult)
-            .filter(StructuredResult.ocr_result_id == latest_ocr.id)
+            .join(OcrResult, StructuredResult.ocr_result_id == OcrResult.id)
+            .filter(
+                OcrResult.image_id == image_id,
+                OcrResult.status == OcrStatus.DONE,
+                StructuredResult.status == OcrStatus.DONE,
+            )
             .order_by(StructuredResult.id.desc())
             .first()
         )

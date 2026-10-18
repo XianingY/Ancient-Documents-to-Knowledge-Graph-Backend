@@ -248,6 +248,36 @@ def _parse_price_to_float(price_str: str) -> Optional[float]:
     return total if total > 0 else None
 
 
+def _upsert_multi_relation_graph(
+    db: Session,
+    multi_task_id: int,
+    content: dict,
+    status: OcrStatus,
+) -> MultiRelationGraph:
+    """复用跨文档图谱记录，避免重复触发时生成多条结果。"""
+    relation_graph = (
+        db.query(MultiRelationGraph)
+        .filter(MultiRelationGraph.multi_task_id == multi_task_id)
+        .order_by(MultiRelationGraph.id.desc())
+        .first()
+    )
+    if relation_graph is None:
+        relation_graph = MultiRelationGraph(
+            multi_task_id=multi_task_id,
+            content=json.dumps(content, ensure_ascii=False),
+            status=status,
+            created_at=get_beijing_time(),
+        )
+        db.add(relation_graph)
+    else:
+        relation_graph.content = json.dumps(content, ensure_ascii=False)
+        relation_graph.status = status
+        relation_graph.created_at = get_beijing_time()
+    db.commit()
+    db.refresh(relation_graph)
+    return relation_graph
+
+
 async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
     """
     对 MultiTask 进行跨文档分析（v3 增强版）
@@ -267,6 +297,9 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
         if not multi_task:
             return
 
+        multi_task.status = OcrStatus.PROCESSING
+        db.commit()
+
         associations = db.query(MultiTaskStructuredResult).filter(
             MultiTaskStructuredResult.multi_task_id == multi_task_id
         ).all()
@@ -277,6 +310,13 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
 
         if not structured_results:
             logger.warning("multi_task_no_results", extra={"multi_task_id": multi_task_id})
+            multi_task.status = OcrStatus.FAILED
+            _upsert_multi_relation_graph(
+                db,
+                multi_task_id,
+                {"error": "No completed structured results"},
+                OcrStatus.FAILED,
+            )
             return
 
         parsed_datas: List[Dict] = []
@@ -848,26 +888,29 @@ async def analyze_multi_task(multi_task_id: int, db: Session) -> None:
         insights = await call_llm_for_insights(statistics, parsed_datas_out)
         echarts_option["insights"] = insights
 
-        multi_relation_graph = MultiRelationGraph(
-            multi_task_id=multi_task_id,
-            content=json.dumps(echarts_option, ensure_ascii=False),
-            status=OcrStatus.DONE,
-            created_at=get_beijing_time(),
+        multi_task.status = OcrStatus.DONE
+        _upsert_multi_relation_graph(
+            db,
+            multi_task_id,
+            echarts_option,
+            OcrStatus.DONE,
         )
-        db.add(multi_relation_graph)
-        db.commit()
         logger.info("multi_task_analysis_completed", extra={"multi_task_id": multi_task_id})
 
     except Exception as e:
         logger.error("multi_task_analysis_error", extra={"multi_task_id": multi_task_id, "error": str(e)})
-        multi_relation_graph = MultiRelationGraph(
-            multi_task_id=multi_task_id,
-            content=json.dumps({"error": str(e)}),
-            status=OcrStatus.FAILED,
-            created_at=get_beijing_time(),
-        )
-        db.add(multi_relation_graph)
-        db.commit()
+        try:
+            multi_task = db.query(MultiTask).filter(MultiTask.id == multi_task_id).first()
+            if multi_task:
+                multi_task.status = OcrStatus.FAILED
+            _upsert_multi_relation_graph(
+                db,
+                multi_task_id,
+                {"error": str(e)},
+                OcrStatus.FAILED,
+            )
+        except Exception:
+            db.rollback()
 
 
 # ── 同步包装器（供 Celery Worker 调用，避免 asyncio.run() 冲突）──────────────
