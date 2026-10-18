@@ -135,6 +135,8 @@
 ├── requirements-dev.txt       # 开发/测试依赖
 ├── migrations/                # Alembic 数据库迁移
 ├── doc.md                     # 详细 API 接口文档
+├── experiments/
+│   └── literature_pipeline.py # 文献图片实验管线
 └── api_test/
     └── test_api.py            # 集成测试
 ```
@@ -233,6 +235,16 @@ pytest -m live_api
 ```
 
 `api_test/test_api.py` 默认标记为 `live_api`，不会在普通测试中运行；可通过 `API_TEST_BASE_URL` 指定服务地址。
+
+### 文献图片实验
+
+```bash
+python experiments/literature_pipeline.py \
+  --data-dir "文献图片数据-6契-5行传" \
+  --output-dir experiment_outputs
+```
+
+详见 [experiments/README.md](./experiments/README.md)。
 
 ### 数据库迁移
 

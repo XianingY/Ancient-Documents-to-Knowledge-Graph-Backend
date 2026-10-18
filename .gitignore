@@ -1,5 +1,7 @@
 pic/
 *.mp4
+文献图片数据-6契-5行传/
+experiment_outputs/
 input/
 output/
 database/*.db
