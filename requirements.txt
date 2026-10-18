@@ -33,6 +33,7 @@ pydantic-settings==2.13.1
 
 # 数据库
 SQLAlchemy==2.0.48
+alembic==1.16.5
 
 # 鉴权（PyPI 包名 PyJWT，代码中 import jwt）
 PyJWT==2.12.1
