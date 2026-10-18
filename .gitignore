@@ -1,4 +1,5 @@
 pic/
+*.mp4
 input/
 output/
 database/*.db
