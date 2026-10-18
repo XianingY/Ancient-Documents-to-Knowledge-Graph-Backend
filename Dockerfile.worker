@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-api.txt requirements-worker.txt ./
+RUN pip install -r requirements-worker.txt
+
+COPY database.py ./
+COPY app ./app
+COPY scripts/download_ocr_models.py ./scripts/download_ocr_models.py
+
+# 可选：构建期缓存 OCR 模型；默认关闭，避免网络波动导致镜像构建失败。
+ARG PRELOAD_OCR_MODELS=false
+RUN if [ "$PRELOAD_OCR_MODELS" = "true" ]; then python scripts/download_ocr_models.py; else echo "Skipping OCR model preload"; fi
+
+CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=2"]

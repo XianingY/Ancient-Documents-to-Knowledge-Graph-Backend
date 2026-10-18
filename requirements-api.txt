@@ -1,0 +1,35 @@
+# API 服务运行依赖：不包含本地 PaddleOCR/OCR 图像处理栈。
+
+# Web
+fastapi==0.135.1
+starlette==0.52.1
+uvicorn[standard]==0.41.0
+python-multipart==0.0.22
+slowapi==0.1.9
+
+# 配置与校验
+python-dotenv==1.2.2
+pydantic==2.12.5
+pydantic-settings==2.13.1
+
+# 数据库与迁移
+SQLAlchemy==2.0.48
+alembic==1.16.5
+
+# 鉴权
+PyJWT==2.12.1
+passlib==1.7.4
+bcrypt==4.0.1
+
+# 图片元信息与基础图像处理
+pillow==12.1.1
+numpy==2.3.5
+
+# 任务队列与缓存
+celery[redis]==5.6.2
+redis>=4.5.2,<6.5
+
+# AI / 向量检索 / 图分析
+dashscope==1.25.13
+chromadb==0.5.23
+networkx==3.6.1

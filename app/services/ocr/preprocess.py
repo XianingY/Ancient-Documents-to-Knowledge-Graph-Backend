@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
-import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -25,6 +24,8 @@ def _odd_kernel(value: float, minimum: int) -> int:
 
 def detect_paper_bbox(rgb: np.ndarray) -> tuple[int, int, int, int]:
     """Find the largest paper-colored region while removing thin grid lines."""
+    import cv2
+
     height, width = rgb.shape[:2]
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     mask = ((hsv[:, :, 2] > 60) & (hsv[:, :, 1] < 150)).astype(np.uint8) * 255

@@ -1,0 +1,15 @@
+# OCR Worker 运行依赖：API 服务依赖 + 本地 PaddleOCR/OCR 图像处理栈。
+
+-r requirements-api.txt
+
+# 图片与本地 OCR
+opencv-contrib-python==4.10.0.84
+scipy==1.18.1
+paddlepaddle==3.3.1; sys_platform == "darwin"
+paddlepaddle==3.3.1; sys_platform == "linux" and platform_machine == "x86_64"
+paddlepaddle==3.2.2; sys_platform == "linux" and platform_machine == "aarch64"
+paddleocr==3.7.0
+paddlex[ocr-core]==3.7.1
+
+# OCR Optimization — Ensemble alignment
+sequence_align>=0.2.0

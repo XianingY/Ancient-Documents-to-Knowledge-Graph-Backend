@@ -7,10 +7,17 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: ancient_doc_backend
     ports:
       - "3000:3000"
@@ -22,13 +29,16 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SERVER_PORT=3000
-    depends_on:
-      - redis
     restart: unless-stopped
-    command: uvicorn main:app --host 0.0.0.0 --port 3000
+    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 3000"
+    depends_on:
+      redis:
+        condition: service_healthy
 
   celery_worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
     container_name: ancient_doc_celery_worker
     volumes:
       - ./database:/app/database
@@ -38,8 +48,10 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
-      - redis
-      - backend
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     restart: unless-stopped
     command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
 
@@ -50,13 +62,16 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   demo_seed:
     profiles:
       - demo
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     container_name: ancient_doc_demo_seed
     volumes:
       - ./database:/app/database
@@ -66,7 +81,10 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     restart: "no"
     command: python scripts/seed_demo_web.py --limit 12
 
