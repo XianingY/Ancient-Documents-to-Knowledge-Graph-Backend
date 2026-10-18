@@ -6,6 +6,10 @@ import pytest
 import numpy as np
 from PIL import Image
 
+# FastAPI/Pydantic 配置在导入 app.core.config 时就需要 SECRET_KEY。
+# 单元测试不需要生产密钥，但必须避免依赖开发者本机 .env。
+os.environ.setdefault("SECRET_KEY", "unit-test-secret-key-with-at-least-32-chars")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 @pytest.fixture

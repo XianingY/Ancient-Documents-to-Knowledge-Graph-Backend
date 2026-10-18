@@ -62,15 +62,14 @@ _MAX_CONTEXT = 20
 
 def _vector_search_sync(question: str, user_id: int, top_k: int = _VECTOR_TOP_K) -> list:
     """通过 ChromaDB 进行语义向量检索，返回与问题最相关的文书。"""
+    if user_id is None:
+        return []
     try:
         from app.services.vector_store.chroma import query_documents
 
         embedding = _get_text_embeddings_sync(question)
         where = {"user_id": user_id}
-        results = query_documents(embedding, top_k, where)
-        if not results:
-            results = query_documents(embedding, top_k, None)
-        return results
+        return query_documents(embedding, top_k, where)
     except Exception as e:
         logger.warning("vector_search_failed", extra={"error": str(e)})
         return []
@@ -83,10 +82,10 @@ async def retrieve_context(
 ) -> list:
     """ChromaDB 向量检索的异步包装。"""
     from app.services.vector_store.chroma import query_documents
+    if user_id is None:
+        return []
     where = {"user_id": user_id} if user_id is not None else None
     results = await run_in_threadpool(query_documents, question_vec, top_k, where)
-    if not results and where:
-        results = await run_in_threadpool(query_documents, question_vec, top_k, None)
     return results
 
 
