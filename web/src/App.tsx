@@ -1,5 +1,4 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
 import {
   BarChart3,
   BookOpen,
@@ -9,16 +8,19 @@ import {
   GitBranch,
   Loader2,
   LogOut,
+  MessageCircle,
   Network,
   RefreshCw,
   Save,
   Search,
   Upload,
 } from "lucide-react";
+import { ChatPanel } from "./ChatPanel";
 import { ApiError, DEMO_PASSWORD, DEMO_USERNAME, createApiClient } from "./api";
 import type {
   ImageItem,
   MultiRelationGraph,
+  ChatTurn,
   OcrResult,
   RelationGraph,
   StatisticsData,
@@ -34,7 +36,7 @@ import {
   initialSegmentTexts,
 } from "./proofreading";
 
-type Tab = "document" | "proofread" | "graph" | "multi" | "statistics";
+type Tab = "document" | "proofread" | "graph" | "multi" | "statistics" | "chat";
 
 const TOKEN_KEY = "wenzhi_web_token";
 const CORE_FIELDS = [
@@ -129,20 +131,34 @@ function sleep(ms: number) {
 
 function GraphView({ option }: { option: unknown }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const chartRef = useRef<import("echarts").ECharts | null>(null);
+  const resizeRef = useRef<(() => void) | null>(null);
+  const [chartReady, setChartReady] = useState(0);
 
   useEffect(() => {
     if (!hostRef.current) {
       return;
     }
-    const chart = echarts.init(hostRef.current);
-    chartRef.current = chart;
-    const resize = () => chart.resize();
-    window.addEventListener("resize", resize);
+    let cancelled = false;
+    void import("echarts").then((echarts) => {
+      if (cancelled || !hostRef.current) {
+        return;
+      }
+      const chart = echarts.init(hostRef.current);
+      chartRef.current = chart;
+      const resize = () => chart.resize();
+      resizeRef.current = resize;
+      window.addEventListener("resize", resize);
+      setChartReady((value) => value + 1);
+    });
     return () => {
-      window.removeEventListener("resize", resize);
-      chart.dispose();
+      cancelled = true;
+      if (resizeRef.current) {
+        window.removeEventListener("resize", resizeRef.current);
+      }
+      chartRef.current?.dispose();
       chartRef.current = null;
+      resizeRef.current = null;
     };
   }, []);
 
@@ -152,7 +168,7 @@ function GraphView({ option }: { option: unknown }) {
     }
     const content = normalizeChartOption(option);
     chartRef.current.setOption(content, true);
-  }, [option]);
+  }, [option, chartReady]);
 
   return <div ref={hostRef} className="graph-canvas" />;
 }
@@ -427,6 +443,18 @@ export default function App() {
     setCorrectedText(composeTextFromSegments(ocrResult, nextTexts));
   }
 
+  async function submitChat(question: string, history: ChatTurn[]) {
+    const result = await api.chatQuery(
+      question,
+      history.map(({ role, content }) => ({ role, content })),
+    );
+    return {
+      role: "assistant" as const,
+      content: result.answer,
+      sources: result.sources,
+    };
+  }
+
   useEffect(() => {
     if (!token) {
       return;
@@ -496,6 +524,9 @@ export default function App() {
           </button>
           <button className={activeTab === "multi" ? "active" : ""} onClick={() => setActiveTab("multi")}>
             <Network size={17} /> 跨文档
+          </button>
+          <button className={activeTab === "chat" ? "active" : ""} onClick={() => setActiveTab("chat")}>
+            <MessageCircle size={17} /> 问答
           </button>
           <button className={activeTab === "statistics" ? "active" : ""} onClick={() => setActiveTab("statistics")}>
             <BarChart3 size={17} /> 统计
@@ -631,6 +662,10 @@ export default function App() {
             ) : (
               <EmptyState title="暂无跨文档图谱" text="从左侧选择至少两篇文书后生成。" />
             )}
+          </section>
+        ) : activeTab === "chat" ? (
+          <section className="content-wide chat-content">
+            <ChatPanel onSubmit={submitChat} />
           </section>
         ) : activeTab === "graph" ? (
           <section className="content-wide">

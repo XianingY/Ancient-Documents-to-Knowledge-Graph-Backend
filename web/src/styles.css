@@ -752,6 +752,146 @@ button:disabled {
   opacity: 0.62;
 }
 
+.chat-content {
+  display: grid;
+  align-items: stretch;
+}
+
+.chat-shell {
+  display: grid;
+  grid-template-rows: auto minmax(320px, 1fr) auto auto;
+  min-height: 72vh;
+  padding: 22px;
+  background: #fff;
+  border: 1px solid #dfe7e3;
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(32, 54, 47, 0.1);
+}
+
+.chat-messages {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.chat-empty {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  align-self: center;
+  padding: 40px;
+  color: #65736e;
+  text-align: center;
+}
+
+.chat-message {
+  display: grid;
+  gap: 8px;
+  max-width: min(760px, 92%);
+}
+
+.chat-message.user {
+  justify-self: end;
+}
+
+.chat-message.assistant {
+  justify-self: start;
+}
+
+.chat-bubble {
+  padding: 12px 15px;
+  border-radius: 8px;
+  border: 1px solid #d9e2de;
+  background: #f8fbfa;
+}
+
+.chat-message.user .chat-bubble {
+  border-color: #b9e3d9;
+  background: #e8f7f3;
+}
+
+.chat-bubble strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #42524c;
+  font-size: 12px;
+}
+
+.chat-bubble p {
+  margin: 0;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.chat-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #57675f;
+}
+
+.chat-sources {
+  display: grid;
+  gap: 8px;
+}
+
+.source-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border-left: 3px solid #239b82;
+  border-radius: 5px;
+  background: #f4f8f6;
+}
+
+.source-card strong {
+  color: #31413b;
+  font-size: 13px;
+}
+
+.source-card small,
+.source-card p {
+  margin: 0;
+  color: #65736e;
+  line-height: 1.55;
+}
+
+.source-card p {
+  font-size: 12px;
+  color: #4c5c56;
+}
+
+.chat-error {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid #f2c7c0;
+  border-radius: 6px;
+  background: #fdf4f3;
+  color: #8b2e28;
+}
+
+.chat-input-bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.chat-input-bar input {
+  height: 44px;
+  padding: 0 13px;
+  border: 1px solid #d5dfda;
+  border-radius: 6px;
+  outline: none;
+}
+
+.chat-input-bar input:focus {
+  border-color: #239b82;
+  box-shadow: 0 0 0 3px rgba(35, 155, 130, 0.15);
+}
+
 @keyframes spin {
   from {
     transform: rotate(0deg);

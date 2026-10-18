@@ -9,6 +9,8 @@ import type {
   StatisticsData,
   StructuredResult,
   UserInfo,
+  ChatTurn,
+  ChatResult,
 } from "./types";
 import type { SegmentEditPayload } from "./proofreading";
 
@@ -230,6 +232,14 @@ export class ApiClient {
 
   async statistics() {
     const payload = await this.request<ApiEnvelope<StatisticsData>>("/statistics");
+    return payload.data;
+  }
+
+  async chatQuery(question: string, history: ChatTurn[] = []) {
+    const payload = await this.request<ApiEnvelope<ChatResult>>("/chat/query", {
+      method: "POST",
+      body: JSON.stringify({ question, history }),
+    });
     return payload.data;
   }
 }

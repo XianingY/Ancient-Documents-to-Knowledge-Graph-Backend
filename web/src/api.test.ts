@@ -107,6 +107,46 @@ describe("ApiClient", () => {
     );
   });
 
+  it("sends chat question and history", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        success: true,
+        data: {
+          answer: "张三是卖方。",
+          sources: [
+            {
+              index: 1,
+              image_id: 3,
+              filename: "#3 地契",
+              excerpt: "立契人张三",
+            },
+          ],
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient("/api", "token-abc");
+    const result = await api.chatQuery("谁卖地？", [
+      { role: "user", content: "上一问" },
+      { role: "assistant", content: "上一答" },
+    ]);
+
+    expect(result.answer).toBe("张三是卖方。");
+    expect(result.sources).toHaveLength(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(
+      JSON.stringify({
+        question: "谁卖地？",
+        history: [
+          { role: "user", content: "上一问" },
+          { role: "assistant", content: "上一答" },
+        ],
+      }),
+    );
+  });
+
   it("raises ApiError with backend detail", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "未授权" }, { status: 401 })));
 

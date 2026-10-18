@@ -118,3 +118,28 @@ export type WorkflowProgress = {
   stage: "saving" | "structured" | "graph" | "done";
   message: string;
 };
+
+export type ChatSource = {
+  index?: number;
+  doc_id?: string | number;
+  image_id?: number | string;
+  filename?: string;
+  time?: string;
+  location?: string;
+  seller?: string;
+  buyer?: string;
+  price?: string;
+  subject?: string;
+  excerpt?: string;
+};
+
+export type ChatTurn = {
+  role: "user" | "assistant";
+  content: string;
+  sources?: ChatSource[];
+};
+
+export type ChatResult = {
+  answer: string;
+  sources: ChatSource[];
+};
