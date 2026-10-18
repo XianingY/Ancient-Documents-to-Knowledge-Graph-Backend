@@ -519,6 +519,74 @@ Authorization: Bearer {access_token}
 
 ---
 
+### PATCH /api/v1/ocr-results/{ocr_id}
+保存人工修订后的 OCR 文本。支持整段修订和分段修订两种模式：
+
+- `corrected_text`：保存后用于结构化分析的完整文本
+- `segment_edits`：可选，逐段提交变更；后端合并到 `corrected_segments_json`
+- 首次保存时会将原始 OCR 文本备份到 `original_raw_text`
+- `human_corrected` 置为 `true`，结构化分析优先使用 `corrected_text`
+
+**请求头**
+```
+Authorization: Bearer {access_token}
+```
+
+**请求体**
+```json
+{
+  "corrected_text": "立永賣\n孔珍",
+  "segment_edits": [
+    {
+      "segment_id": "s0001",
+      "text": "孔珍"
+    }
+  ]
+}
+```
+
+**响应** (200)
+```json
+{
+  "success": true,
+  "message": "修改成功",
+  "data": {
+    "id": 1,
+    "raw_text": "立永賣\n孔□",
+    "original_raw_text": "立永賣\n孔□",
+    "corrected_text": "立永賣\n孔珍",
+    "corrected_segments": [
+      {
+        "segment_id": "s0001",
+        "text": "孔珍",
+        "updated_at": "2026-01-01T00:00:00"
+      }
+    ],
+    "human_corrected": true
+  }
+}
+```
+
+---
+
+### POST /api/v1/ocr-results/{ocr_id}/reanalyze
+将指定 OCR 结果重新提交到结构化分析队列。若 OCR 已人工修订，本次分析使用 `corrected_text`。
+
+**请求头**
+```
+Authorization: Bearer {access_token}
+```
+
+**响应** (200)
+```json
+{
+  "success": true,
+  "message": "OCR结果 1 的结构化分析任务已提交到队列"
+}
+```
+
+---
+
 ### GET /api/v1/ocr-results/{ocr_result_id}/structured-results
 获取指定 OCR 结果的结构化结果列表（分页）。
 
@@ -936,6 +1004,8 @@ Authorization: Bearer {access_token}
 4. **上下文格式化**：`_format_context` 按文书条数动态限制每条最大字数（**400 / 250 / 150**），非固定 250。
 5. **生成**：DashScope **`qwen-turbo`**；未配置 `DASHSCOPE_API_KEY` 时返回固定提示、不调用模型。
 6. **多轮**：`history` 在 `_build_messages` 中**最多最近 6 轮**。
+
+**用户隔离**：ChromaDB 向量检索始终携带 `where={"user_id": 当前用户}`。当前用户没有向量结果时，只会降级为该用户数据库中的最近文书，不会检索其他用户的数据。
 
 **流式**：`POST /api/v1/chat/query-stream`（SSE）使用相同的 **`hybrid_retrieve`** 与流式生成（见 `app/routers/chat.py`）。
 

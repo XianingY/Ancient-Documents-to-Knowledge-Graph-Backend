@@ -46,7 +46,7 @@
 
 ### 2. OCR 文字识别
 
-基于阿里云 DashScope 多模态大模型，对古代地契文书中的手写/印刷文字进行识别，支持繁体字、异体字等复杂场景。
+默认使用本地 **PaddleOCR PP-OCRv6 双模型共识管线**，对古代地契文书中的手写/印刷文字进行保守识别，支持繁体字、异体字等复杂场景。Paddle 不可用时可回退到 DashScope Qwen conservative OCR；两种模式的输出都保留分段坐标、置信度、覆盖率和拒绝原因，供人工分段校对。
 
 ### 3. 结构化信息提取
 
@@ -68,6 +68,7 @@
 - **流式输出（SSE）**：支持实时流式生成回答
 - **多轮对话**：保留历史上下文，支持连续追问
 - **来源溯源**：每条回答附带引用文书来源
+- **用户隔离**：向量检索始终携带 `user_id` 过滤条件，不会在当前用户无结果时回退到全局集合
 
 ### 6. 数据统计
 
@@ -80,7 +81,8 @@
 | Web 框架 | FastAPI 0.135 + Uvicorn |
 | 数据库 | SQLAlchemy 2.0 + SQLite |
 | 异步任务 | Celery 5.6 + Redis 7 |
-| AI 服务 | 阿里云 DashScope（OCR / 结构化 / 问答生成 / 文本嵌入） |
+| 本地 OCR | PaddleOCR / PaddleX（PP-OCRv6 双模型共识与字符救援） |
+| AI 服务 | 阿里云 DashScope（Qwen OCR 回退 / 结构化 / 问答生成 / 文本嵌入） |
 | 向量数据库 | ChromaDB 0.5（语义检索） |
 | 图分析 | NetworkX 3.6（知识图谱构建与社会网络分析） |
 | 鉴权 | JWT（PyJWT + passlib + bcrypt） |
@@ -124,10 +126,14 @@
 │   └── worker/
 │       └── tasks.py           # Celery 异步任务定义
 ├── docker-compose.yml         # Docker 编排配置
-├── Dockerfile                 # 容器镜像构建
+├── Dockerfile.api             # 轻量 API 镜像
+├── Dockerfile.worker          # OCR Worker 镜像
 ├── nginx.conf                 # Nginx 反向代理配置（生产环境）
-├── requirements.txt           # Python 依赖
+├── requirements-api.txt        # API 服务依赖（不含 Paddle/OpenCV/SciPy）
+├── requirements-worker.txt    # OCR Worker 依赖
+├── requirements.txt           # 全量运行依赖（兼容旧用法）
 ├── requirements-dev.txt       # 开发/测试依赖
+├── migrations/                # Alembic 数据库迁移
 ├── doc.md                     # 详细 API 接口文档
 └── api_test/
     └── test_api.py            # 集成测试
@@ -148,7 +154,7 @@
 cp .env.example .env
 # 编辑 .env，填入 SECRET_KEY 和 DASHSCOPE_API_KEY
 
-# 2. 一键启动（API 服务 + Redis + Celery Worker）
+# 2. 一键启动（API 服务 + Redis + OCR Worker）
 docker-compose up -d
 
 # 3. 查看运行日志
@@ -166,7 +172,10 @@ python -m venv .venv
 source .venv/bin/activate
 
 # 2. 安装依赖
-pip install -r requirements.txt
+# API 进程只需轻量依赖；OCR Worker 进程安装 requirements-worker.txt
+pip install -r requirements-api.txt
+# 如在本机运行 OCR Worker，另开虚拟环境或同环境执行：
+pip install -r requirements-worker.txt
 
 # 3. 创建环境变量文件
 cp .env.example .env
@@ -179,6 +188,7 @@ redis-server
 celery -A app.core.celery_app worker --loglevel=info --concurrency=2
 
 # 6. 启动 API 服务
+alembic upgrade head
 uvicorn main:app --host 0.0.0.0 --port 3000
 ```
 
@@ -204,7 +214,38 @@ docker-compose --profile demo run --rm demo_seed
 docker-compose up -d redis backend celery_worker frontend
 ```
 
-Web 端支持图片上传、OCR 文本编辑保存、自动重新结构化分析、单文书/跨文档知识图谱和统计看板。默认前端 API 基址为 `/api`，生产容器通过 Nginx 代理到后端服务。
+Web 端支持图片上传、OCR 全文与分段校对、自动重新结构化分析、单文书/跨文档知识图谱、智能问答和统计看板。默认前端 API 基址为 `/api`，生产容器通过 Nginx 代理到后端服务。
+
+### 测试
+
+```bash
+# Python 单元测试（默认排除 live API 联调用例）
+pytest
+
+# 前端测试
+cd web && npm test
+
+# 前端构建（TypeScript + Vite）
+cd web && npm run build
+
+# 显式运行需要真实后端服务的 API 联调用例
+pytest -m live_api
+```
+
+`api_test/test_api.py` 默认标记为 `live_api`，不会在普通测试中运行；可通过 `API_TEST_BASE_URL` 指定服务地址。
+
+### 数据库迁移
+
+```bash
+# 应用最新 schema
+alembic upgrade head
+
+# 查看当前迁移状态
+alembic current
+
+# 检查模型与迁移是否存在未生成差异
+alembic check
+```
 
 ### API 文档
 
@@ -226,6 +267,14 @@ Web 端支持图片上传、OCR 文本编辑保存、自动重新结构化分析
 | `SERVER_PORT` | 否 | API 服务端口 | `3000` |
 | `UPLOAD_DIR` | 否 | 图片存储目录 | `pic` |
 | `DATABASE_URL` | 否 | 数据库连接字符串 | SQLite（`database/app.db`） |
+| `OCR_ENGINE` | 否 | OCR 主引擎 | `paddle_v6_consensus` |
+| `OCR_FALLBACK_ENGINE` | 否 | OCR 回退引擎 | `qwen_conservative` |
+| `OCR_MULTIVIEW_ENABLED` | 否 | 是否启用布局多视图融合 | `false` |
+| `OCR_CONSENSUS_MIN_SCORE` | 否 | 双模型共识最低分数 | `0.45` |
+| `OCR_CONSENSUS_MIN_SIMILARITY` | 否 | 双模型共识最低相似度 | `0.40` |
+| `OCR_CHAR_RESCUE_ENABLED` | 否 | 是否启用字符救援 | `true` |
+
+完整 OCR 配置见 [.env.example](./.env.example)。
 
 ## 自动分析流水线
 
