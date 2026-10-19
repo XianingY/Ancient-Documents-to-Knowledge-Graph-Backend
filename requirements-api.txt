@@ -31,5 +31,6 @@ redis>=4.5.2,<6.5
 
 # AI / 向量检索 / 图分析
 dashscope==1.25.13
+requests==2.32.5
 chromadb==0.5.23
 networkx==3.6.1

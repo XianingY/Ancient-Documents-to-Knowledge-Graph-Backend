@@ -246,6 +246,15 @@ python experiments/literature_pipeline.py \
 
 详见 [experiments/README.md](./experiments/README.md)。
 
+如需使用 DeepSeek 做实体关系抽取：
+
+```bash
+export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+python experiments/llm_extraction.py \
+  --input-dir experiment_outputs/ocr \
+  --output-dir experiment_outputs/llm_graphs
+```
+
 ### 数据库迁移
 
 ```bash

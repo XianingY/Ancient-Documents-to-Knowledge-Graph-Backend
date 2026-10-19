@@ -143,6 +143,109 @@ experiment_outputs/tiled_ocr_medium/
 - 置信度 ≥ 0.8 后文本较可靠，但覆盖量大幅下降。
 - 因此，当前不建议用高分辨率分块替代整图 OCR；它适合作为对比实验或人工校对辅助。
 
+## DeepSeek 实体关系抽取
+
+默认管线中的实体关系抽取是规则抽取。可使用 `experiments/llm_extraction.py` 切换为 DeepSeek LLM 抽取，并保留规则抽取作为回退。
+
+### 1. 配置 API Key
+
+不要把密钥写入代码或 `.env` 提交到 Git：
+
+```bash
+export DEEPSEEK_API_KEY="你的DeepSeek API Key"
+```
+
+### 2. 运行
+
+```bash
+python experiments/llm_extraction.py \
+  --input-dir experiment_outputs/ocr \
+  --output-dir experiment_outputs/llm_graphs \
+  --model deepseek-chat
+```
+
+如果还没有 OCR 输出目录，先运行规则主实验生成：
+
+```bash
+python experiments/literature_pipeline.py \
+  --data-dir "文献图片数据-6契-5行传" \
+  --output-dir experiment_outputs
+```
+
+### 3. 输出
+
+```text
+experiment_outputs/llm_graphs/
+  3.141.json
+  3.141.html
+  ...
+```
+
+每个 JSON 文件包含：
+
+```json
+{
+  "document_id": "3.141",
+  "extraction_method": "llm",
+  "extraction": {
+    "entities": [],
+    "relations": [],
+    "metadata": {}
+  },
+  "validation": {
+    "accepted_entities": 0,
+    "rejected_entities": 0,
+    "accepted_relations": 0,
+    "rejected_relations": 0
+  },
+  "fallback_reason": null
+}
+```
+
+### 4. 校验规则
+
+LLM 输出不会直接被信任。脚本会：
+
+1. 要求模型返回 JSON。
+2. 要求每个实体和关系都有 `evidence`。
+3. 检查 `evidence` 是否逐字来自 OCR 文本。
+4. 拒绝包含 `□` / `■` 的 evidence。
+5. 检查关系两端是否引用已通过校验的实体。
+6. 检查实体类型和关系类型是否在白名单内。
+7. LLM 失败、JSON 无效或没有可接受实体时，回退到规则抽取。
+
+### 5. 无 API Key 模式
+
+未设置 `DEEPSEEK_API_KEY` 时，脚本会自动回退到规则抽取，适合课堂离线演示：
+
+```bash
+python experiments/llm_extraction.py \
+  --input-dir experiment_outputs/ocr \
+  --output-dir experiment_outputs/llm_graphs
+```
+
+如果希望没有 Key 时直接报错，而不是回退：
+
+```bash
+python experiments/llm_extraction.py \
+  --input-dir experiment_outputs/ocr \
+  --output-dir experiment_outputs/llm_graphs \
+  --no-fallback
+```
+
+### 6. 推荐实验任务
+
+学生可以对比规则抽取和 LLM 抽取：
+
+| 项目 | 规则抽取 | LLM 抽取 |
+|---|---|---|
+| 中人 | 通常未抽取 | 可识别 `憑中` 人物 |
+| 四至 | 通常未抽取 | 可尝试识别方位和邻地 |
+| 契约类型 | 需继续补规则 | 可从标题和正文判断 |
+| 稳定性 | 完全可复现 | 受模型和 prompt 影响 |
+| 幻觉风险 | 无 | 有，需要 evidence 校验 |
+| 离线能力 | 可离线 | 需要 API |
+
 ## 实验拆分
 
 建议拆成三部分：
