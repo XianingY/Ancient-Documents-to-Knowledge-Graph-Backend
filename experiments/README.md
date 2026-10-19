@@ -89,6 +89,60 @@ experiment_outputs/genealogy_previews/
 - 人工点校
 - 族谱实体抽取
 
+## 高分辨率分块 OCR
+
+整图 OCR 会把 `12800×9600` 行传图压缩到最长边 2400。可用以下脚本对原图做高分辨率局部识别：
+
+```bash
+python experiments/tiled_ocr.py \
+  "文献图片数据-6契-5行传/2.行传图-5张/25.png" \
+  --output-dir experiment_outputs/tiled_ocr \
+  --tile-width 6400 \
+  --tile-height 4800 \
+  --overlap 256 \
+  --engine consensus
+```
+
+也可以只保留 PP-OCRv6 medium 的原始识别结果，并按置信度过滤：
+
+```bash
+python experiments/tiled_ocr.py \
+  "文献图片数据-6契-5行传/2.行传图-5张/25.png" \
+  --output-dir experiment_outputs/tiled_ocr_medium \
+  --tile-width 6400 \
+  --tile-height 4800 \
+  --overlap 256 \
+  --engine medium \
+  --min-confidence 0.8
+```
+
+输出：
+
+```text
+experiment_outputs/tiled_ocr_medium/
+  25.tiled.txt
+  25.tiled.json
+```
+
+### 实验结论
+
+以占位符最多的 `25.png` 为样本：
+
+| 方式 | 切片数 | 可见字符 | `□` 数量 | `□` 占比 |
+|---|---:|---:|---:|---:|
+| 整图 OCR | 1 | 496 | 44 | 8.87% |
+| 3200×2400 共识分块 | 25 | 284 | 124 | 43.66% |
+| 6400×4800 共识分块 | 9 | 698 | 113 | 16.19% |
+| medium raw，不过滤 | 9 | 1265 | 0 | 0% |
+| medium raw，置信度 ≥ 0.8 | 9 | 247 | 0 | 0% |
+
+结论：
+
+- 高分辨率分块配合当前双模型共识管线，会放大 medium/small 模型的分歧，`□` 显著增加。
+- raw medium 可以把 `□` 降为 0，但低置信度片段包含明显乱码，不能视为准确率提升。
+- 置信度 ≥ 0.8 后文本较可靠，但覆盖量大幅下降。
+- 因此，当前不建议用高分辨率分块替代整图 OCR；它适合作为对比实验或人工校对辅助。
+
 ## 实验拆分
 
 建议拆成三部分：
@@ -108,4 +162,3 @@ experiment_outputs/genealogy_previews/
 - 本地 PaddleOCR 与云端 DashScope 可混合使用。
 - 契约图优先本地 OCR。
 - 行传图建议先降采样或分块，再走云端 OCR。
-
