@@ -35,6 +35,24 @@ doc.md                   完整 API 文档（字段级）
 
 ## 3. 启动方式
 
+### 先决条件（缺一不可）
+
+- **必须先创建 `.env`**：`cp .env.example .env`。`SECRET_KEY` 在导入期校验，缺失时服务直接抛 `ValidationError`，不是运行到接口才报错。
+- **完整流水线需要 Redis**。没有 Redis 时 API 仍可启动、图片仍可上传，但 OCR 任务不会执行（上传接口会捕获入队异常，只记 warning）。
+- **首次 OCR 需要联网下载 PaddleOCR 模型**（镜像默认不预置，`PRELOAD_OCR_MODELS=false`）。离线机器请先执行 `python scripts/download_ocr_models.py`，或构建时加 `--build-arg PRELOAD_OCR_MODELS=true`。
+- Python 建议 **3.11 / 3.12**。Windows 的 `paddlepaddle` 轮子已在依赖中声明。
+
+### 最短验证（只跑离线实验，不起服务）
+
+只依赖 Pillow，解压后即可验证数据与图谱链路：
+
+```bash
+pip install pillow
+python experiments/literature_pipeline.py \
+  --data-dir "文献图片数据-6契-5行传" \
+  --output-dir experiment_outputs
+```
+
 ### Docker（推荐）
 
 ```bash
