@@ -4,7 +4,7 @@
 
 ## 1. 系统概述
 
-后端采用 **FastAPI + SQLAlchemy（SQLite）+ Celery（Redis）+ ChromaDB** 架构。OCR、结构化提取与问答生成能力通过**阿里云 DashScope** 大模型 API 调用实现；跨文档知识图谱在 `analysis_service` 中结合 **NetworkX** 图分析与自研 `EntityResolver` 实体消歧算法构建。
+后端采用 **FastAPI + SQLAlchemy（SQLite）+ Celery（Redis）+ ChromaDB** 架构。OCR 默认使用**本地 PaddleOCR PP-OCRv6 双模型共识管线**，不可用时回退阿里云 DashScope Qwen；结构化提取与问答生成通过 **DashScope** 大模型 API 实现。跨文档知识图谱在 `analysis_service` 中结合 **NetworkX** 图分析与自研 `EntityResolver` 实体消歧算法构建。
 
 ## 2. 架构设计
 

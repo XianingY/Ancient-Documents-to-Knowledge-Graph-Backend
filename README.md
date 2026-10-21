@@ -2,6 +2,8 @@
 
 > 古代地契文书智能知识图谱系统 · 后端 API
 
+> 交接与联调请先读 [HANDOVER.md](./HANDOVER.md)。
+
 ## 项目简介
 
 本项目是**文渊智图**系统的后端服务，为前端移动应用提供完整的 RESTful API 支持。基于 FastAPI 构建，集成 OCR 文字识别、大模型结构化提取、知识图谱构建、向量检索增强问答（RAG）等核心 AI 能力，实现从古代地契图片到知识图谱的全链路自动化处理。
@@ -147,7 +149,7 @@
 
 - Python 3.11+
 - Redis（Celery 消息代理）
-- 阿里云 DashScope API Key（用于 OCR/AI 分析/问答）
+- 阿里云 DashScope API Key（用于结构化分析、问答；本地 OCR 不需要，仅在 Paddle 不可用时作为兜底）
 
 ### 方式一：Docker 部署（推荐）
 
