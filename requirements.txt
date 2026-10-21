@@ -59,7 +59,6 @@ redis>=4.5.2,<6.5
 dashscope==1.25.13
 requests==2.32.5
 chromadb==0.5.23
-kubernetes==35.0.0
 networkx==3.6.1
 
 # OCR Optimization — Ensemble alignment
